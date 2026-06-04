@@ -172,11 +172,10 @@ function createClaudeCodeRuntimeAdapter(config) {
     getSessionStore() {
       return sessionStore;
     },
-    getTurnCapabilities({ model = "" } = {}) {
-      const effectiveModel = resolveModel(model);
+    getTurnCapabilities() {
       return {
         nativeImageInput: false,
-        toolImageRead: hasClaudeImageFileRead(effectiveModel),
+        toolImageRead: Boolean(config.claudeImageFileRead),
       };
     },
     async initialize() {
@@ -329,17 +328,6 @@ function normalizeThreadId(value) {
 
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function hasClaudeImageFileRead(model) {
-  const normalized = normalizeText(model).toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-  if (/\b(?:sonnet|opus|haiku)\b/.test(normalized)) {
-    return true;
-  }
-  return /\bclaude-(?:3|4)(?:\b|-)/.test(normalized);
 }
 
 function clientMatchesThread(client, threadId) {
