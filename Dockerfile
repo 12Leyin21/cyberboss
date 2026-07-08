@@ -5,8 +5,9 @@
 
 FROM node:22-bookworm-slim
 
-# curl 用于装 Claude Code 原生安装器；git 用于装 package.json 里那两个 github: 依赖
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git \
+# curl 用于装 Claude Code 原生安装器；git 用于装 package.json 里那两个 github: 依赖；
+# imagemagick 用于把静态图表情包转成 GIF（Linux 上没有 macOS 的 sips）
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git imagemagick \
     && rm -rf /var/lib/apt/lists/*
 
 # 装 Claude Code CLI（原生安装器，不依赖 npm 包）

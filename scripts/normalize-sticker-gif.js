@@ -29,19 +29,25 @@ function main() {
     return;
   }
 
-  if (process.platform !== "darwin") {
-    throw new Error("Sticker GIF normalization for non-GIF inputs currently requires macOS `sips`.");
-  }
-  if (!fs.existsSync(SIPS_PATH)) {
-    throw new Error(`Required tool missing: ${SIPS_PATH}`);
+  const normalizedSize = Number.isInteger(size) && size > 0 ? size : DEFAULT_SIZE;
+
+  if (process.platform === "darwin" && fs.existsSync(SIPS_PATH)) {
+    runSips(resolvedInputPath, resolvedOutputPath, normalizedSize);
+  } else {
+    runImageMagick(resolvedInputPath, resolvedOutputPath, normalizedSize);
   }
 
-  const normalizedSize = Number.isInteger(size) && size > 0 ? size : DEFAULT_SIZE;
+  if (!fs.existsSync(resolvedOutputPath)) {
+    throw new Error(`GIF normalization produced no output: ${resolvedOutputPath}`);
+  }
+}
+
+function runSips(inputPath, outputPath, size) {
   const result = spawnSync(SIPS_PATH, [
     "-s", "format", "gif",
-    "-z", String(normalizedSize), String(normalizedSize),
-    resolvedInputPath,
-    "--out", resolvedOutputPath,
+    "-z", String(size), String(size),
+    inputPath,
+    "--out", outputPath,
   ], {
     encoding: "utf8",
   });
@@ -51,9 +57,38 @@ function main() {
     const stdout = String(result.stdout || "").trim();
     throw new Error(`sips gif normalization failed: ${stderr || stdout || `exit ${result.status}`}`);
   }
-  if (!fs.existsSync(resolvedOutputPath)) {
-    throw new Error(`GIF normalization produced no output: ${resolvedOutputPath}`);
+}
+
+// Linux (and any non-macOS host): use ImageMagick's `convert` (or `magick`
+// for ImageMagick 7+, which drops the standalone `convert` binary).
+function runImageMagick(inputPath, outputPath, size) {
+  const binary = findImageMagickBinary();
+  if (!binary) {
+    throw new Error(
+      "Required tool missing: install ImageMagick (`apt-get install imagemagick` on Debian/Ubuntu) " +
+      "to normalize non-GIF stickers on this platform."
+    );
   }
+  const args = binary.name === "magick" ? ["convert"] : [];
+  args.push(inputPath, "-coalesce", "-resize", `${size}x${size}`, outputPath);
+
+  const result = spawnSync(binary.path, args, { encoding: "utf8" });
+  if (result.status !== 0) {
+    const stderr = String(result.stderr || "").trim();
+    const stdout = String(result.stdout || "").trim();
+    throw new Error(`ImageMagick gif normalization failed: ${stderr || stdout || `exit ${result.status}`}`);
+  }
+}
+
+function findImageMagickBinary() {
+  for (const name of ["convert", "magick"]) {
+    const probe = spawnSync("which", [name], { encoding: "utf8" });
+    const foundPath = String(probe.stdout || "").trim();
+    if (probe.status === 0 && foundPath) {
+      return { name, path: foundPath };
+    }
+  }
+  return null;
 }
 
 function readFlag(args, flag) {
