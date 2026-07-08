@@ -30,5 +30,8 @@
     "timeline-for-agent": "github:WenXiaoWendy/timeline-for-agent#main",
     "whereabouts-mcp": "github:WenXiaoWendy/whereabouts-mcp#main",
     "ws": "^8.19.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
   }
 }

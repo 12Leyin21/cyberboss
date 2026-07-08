@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ombre-brain": {
+      "type": "http",
+      "url": "https://ombre-brain-fsps.onrender.com/mcp"
+    }
+  }
+}

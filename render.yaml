@@ -1,0 +1,32 @@
+services:
+  - type: worker
+    name: cyberboss
+    env: docker
+    region: oregon
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: CYBERBOSS_USER_NAME
+        value: 灵兮
+      - key: CYBERBOSS_USER_GENDER
+        value: female
+      - key: CYBERBOSS_ACCOUNT_ID
+        sync: false          # set in Render dashboard once accounts are logged in
+      - key: CYBERBOSS_WORKSPACE_ROOT
+        value: /app/cyberboss-workspace-main
+      - key: CYBERBOSS_RUNTIME
+        value: claudecode
+      - key: CYBERBOSS_CLAUDE_COMMAND
+        value: claude
+      - key: CYBERBOSS_CLAUDE_PERMISSION_MODE
+        value: default
+      - key: CYBERBOSS_CLAUDE_MODEL
+        value: claude-sonnet-4-6
+      - key: CYBERBOSS_CLAUDE_CONTEXT_WINDOW
+        value: "200000"
+      - key: CYBERBOSS_CLAUDE_EXTRA_ARGS
+        value: --effort,medium
+    disk:
+      name: cyberboss-data
+      mountPath: /data
+      sizeGB: 2
