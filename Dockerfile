@@ -30,6 +30,4 @@ ENV HOME=/data
 ENV CYBERBOSS_HOME=/app
 VOLUME ["/data"]
 
-# diary-server runs in the background (read-only diary HTTP API for Tidal_Echo's
-# web PWA); if it crashes it must not take the WeChat bridge down with it.
-CMD ["sh", "-c", "npm run diary:start & npm run shared:start"]
+CMD ["npm", "run", "shared:start"]

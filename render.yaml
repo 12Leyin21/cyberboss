@@ -1,16 +1,11 @@
 services:
-  - type: web
+  - type: worker
     name: cyberboss
     env: docker
     region: oregon
     plan: starter
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /healthz
     envVars:
-      - key: DIARY_API_SECRET
-        sync: false          # set in Render dashboard; also needed by Tidal_Echo's web frontend
-      - key: DIARY_ALLOW_ORIGINS
-        value: https://tidal-echo-web.onrender.com
       - key: CYBERBOSS_USER_NAME
         value: 灵兮
       - key: CYBERBOSS_USER_GENDER
