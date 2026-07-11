@@ -12,6 +12,12 @@ function buildApprovalMatchTokens({ toolName = "", commandTokens = [], input = n
   if (normalizedToolName === "read" && isImageFilePath(extractApprovalFilePath(input, options))) {
     return ["read_image"];
   }
+  if (normalizedToolName === "webfetch") {
+    const domain = extractUrlDomain(input?.url);
+    if (domain) {
+      return ["webfetch", domain];
+    }
+  }
   const mcpToolTokens = extractMcpToolTokens(normalizedToolName);
   if (mcpToolTokens.length) {
     return mcpToolTokens;
@@ -292,6 +298,18 @@ function baseName(value) {
 
 function basePath(value) {
   return normalizeString(value) ? path.resolve(value).replace(/\\/g, "/") : "";
+}
+
+function extractUrlDomain(value) {
+  const normalized = normalizeString(value);
+  if (!normalized) {
+    return "";
+  }
+  try {
+    return new URL(normalized).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
 }
 
 const DEFAULT_TOKEN_KEYS = [

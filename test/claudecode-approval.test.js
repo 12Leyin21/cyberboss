@@ -83,6 +83,21 @@ test("claudecode approval events canonicalize MCP tool approvals for stable alwa
   assert.match(event.payload.command, /^cyberboss_timeline_write\b/);
 });
 
+test("claudecode approval events canonicalize WebFetch approvals by domain for stable always matching", () => {
+  const event = mapClaudeCodeMessageToRuntimeEvent({
+    type: "approval.requested",
+    sessionId: "thread-1",
+    requestId: "req-webfetch",
+    toolName: "WebFetch",
+    input: {
+      url: "https://tidal-echo-backend.onrender.com/phone/activity?token=secret",
+      prompt: "What app is she using most recently?",
+    },
+  });
+
+  assert.deepEqual(event.payload.commandTokens, ["webfetch", "tidal-echo-backend.onrender.com"]);
+});
+
 test("claudecode approval events canonicalize Read image approvals for stable matching", () => {
   const event = mapClaudeCodeMessageToRuntimeEvent({
     type: "approval.requested",
