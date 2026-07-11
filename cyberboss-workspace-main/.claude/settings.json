@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:tidal-echo-backend.onrender.com)"
+      "WebFetch(domain:tidal-echo-backend.onrender.com)",
+      "Read(//data/.secrets/tidal_echo_token)"
     ]
   }
 }

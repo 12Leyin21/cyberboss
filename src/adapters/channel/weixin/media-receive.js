@@ -377,7 +377,9 @@ async function writeUniqueFile(targetDir, fileName, plaintext) {
     }
   }
 
-  throw new Error("unable to allocate a unique attachment file name");
+  const fallback = path.join(targetDir, `${baseName}-${crypto.randomUUID()}${extension}`);
+  await fs.writeFile(fallback, plaintext, { flag: "wx" });
+  return fallback;
 }
 
 function normalizeText(value) {
