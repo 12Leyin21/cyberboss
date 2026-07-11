@@ -3,6 +3,10 @@
     "ombre-brain": {
       "type": "http",
       "url": "https://ombre-brain-fsps.onrender.com/mcp"
+    },
+    "spicy-monopoly": {
+      "type": "http",
+      "url": "https://spicy-monopoly.lol/mcp"
     }
   }
 }
