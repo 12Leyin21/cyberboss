@@ -39,7 +39,7 @@ async function persistIncomingWeixinAttachments({
 
 async function persistSingleAttachment({ attachment, stateDir, cdnBaseUrl, messageId, receivedAt }) {
   const download = await downloadAttachmentPayload(attachment, cdnBaseUrl);
-  const plaintext = decodeAttachmentPayload(download.bytes, attachment, download.contentType);
+  const plaintext = decodeAttachmentPayload(download.bytes, attachment);
   const fileName = buildTargetFileName({
     attachment,
     plaintext,
@@ -151,7 +151,7 @@ function addCandidate(candidates, seen, rawUrl) {
   candidates.push(normalizedUrl);
 }
 
-function decodeAttachmentPayload(bytes, attachment, contentType) {
+function decodeAttachmentPayload(bytes, attachment) {
   const encryptType = Number(attachment?.mediaRef?.encryptType);
   const keyCandidates = buildAesKeyCandidates(attachment);
   if (encryptType !== 1 || keyCandidates.length === 0) {
@@ -166,11 +166,65 @@ function decodeAttachmentPayload(bytes, attachment, contentType) {
     }
   }
 
-  if (looksLikePlainMedia(bytes, contentType)) {
-    return bytes;
+  const plainTextBytes = resolvePlainTextBytes(bytes);
+  if (plainTextBytes) {
+    return plainTextBytes;
   }
 
   throw new Error("failed to decrypt attachment payload");
+}
+
+const TEXT_ENCODING_CANDIDATES = ["utf-8", "gbk", "gb18030", "big5"];
+
+function resolvePlainTextBytes(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
+    return null;
+  }
+  if (detectExtensionFromBuffer(bytes) !== "") {
+    return null;
+  }
+  for (const encoding of TEXT_ENCODING_CANDIDATES) {
+    const decoded = decodeIfMostlyPrintable(bytes, encoding);
+    if (decoded !== null) {
+      return encoding === "utf-8" ? bytes : Buffer.from(decoded, "utf8");
+    }
+  }
+  return null;
+}
+
+function decodeIfMostlyPrintable(bytes, encoding) {
+  const sample = bytes.subarray(0, Math.min(bytes.length, 65536));
+  let sampleDecoded;
+  try {
+    sampleDecoded = new TextDecoder(encoding, { fatal: true }).decode(sample);
+  } catch {
+    return null;
+  }
+  if (!isMostlyPrintableText(sampleDecoded)) {
+    return null;
+  }
+  if (bytes.length === sample.length) {
+    return sampleDecoded;
+  }
+  try {
+    return new TextDecoder(encoding, { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+function isMostlyPrintableText(text) {
+  if (!text.length) {
+    return false;
+  }
+  let controlCount = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code < 0x09 || (code > 0x0d && code < 0x20)) {
+      controlCount += 1;
+    }
+  }
+  return controlCount / text.length < 0.01;
 }
 
 function buildAesKeyCandidates(attachment) {
@@ -233,42 +287,6 @@ function decryptAesEcb(ciphertext, key) {
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
 }
 
-function looksLikePlainMedia(bytes, contentType) {
-  if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
-    return false;
-  }
-
-  if (contentType.startsWith("text/")) {
-    return true;
-  }
-
-  if (detectExtensionFromBuffer(bytes) !== "") {
-    return true;
-  }
-
-  return looksLikeUtf8Text(bytes);
-}
-
-function looksLikeUtf8Text(bytes) {
-  const sample = bytes.subarray(0, Math.min(bytes.length, 65536));
-  let decoded;
-  try {
-    decoded = new TextDecoder("utf-8", { fatal: true }).decode(sample);
-  } catch {
-    return false;
-  }
-  if (!decoded.length) {
-    return false;
-  }
-  let controlCount = 0;
-  for (let index = 0; index < decoded.length; index += 1) {
-    const code = decoded.charCodeAt(index);
-    if (code < 0x09 || (code > 0x0d && code < 0x20)) {
-      controlCount += 1;
-    }
-  }
-  return controlCount / decoded.length < 0.01;
-}
 
 function buildTargetFileName({ attachment, plaintext, contentType, messageId }) {
   const sourceName = sanitizeFileName(attachment?.fileName || "");
