@@ -93,6 +93,187 @@ const PROJECT_TOOLS = [
     },
   },
   {
+    name: "cyberboss_bookshelf_add_book",
+    description: "Add a book to the shared reading bookshelf. Not a real e-book sync — just a shared shelf entry for 灵兮 and 沐沐 to track a book they are reading together.",
+    shortHint: "Add a book to the shared bookshelf.",
+    topics: ["bookshelf"],
+    inputSchema: {
+      type: "object",
+      required: ["title"],
+      properties: {
+        title: { type: "string", description: "Book title." },
+        author: { type: "string", description: "Optional author." },
+        addedBy: { type: "string", description: "Who added it, e.g. 灵兮 or 沐沐." },
+        note: { type: "string", description: "Optional first note, e.g. why this book was picked." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args }) {
+      const result = services.bookshelf.addBook(args);
+      return {
+        text: `Book added to shelf: ${result.title} (${result.id})`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "cyberboss_bookshelf_list_books",
+    description: "List books on the shared bookshelf, optionally filtered by status (reading, finished, paused).",
+    shortHint: "List shelf books, optionally by status.",
+    topics: ["bookshelf"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        status: { type: "string", description: "Optional filter: reading, finished, or paused." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args }) {
+      const result = services.bookshelf.listBooks(args);
+      return {
+        text: `Bookshelf books: ${result.length}.`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "cyberboss_bookshelf_get_book",
+    description: "Get full detail for one bookshelf book, including both readers' progress and all notes.",
+    shortHint: "Get one book's full detail by id.",
+    topics: ["bookshelf"],
+    inputSchema: {
+      type: "object",
+      required: ["bookId"],
+      properties: {
+        bookId: { type: "string", description: "Book id such as bk_ab12cd." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args }) {
+      const result = services.bookshelf.getBook(args);
+      return {
+        text: `Book: ${result.title} (${result.status}).`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "cyberboss_bookshelf_update_progress",
+    description: "Update one reader's progress on a bookshelf book, e.g. current chapter or page.",
+    shortHint: "Update reading progress for one reader.",
+    topics: ["bookshelf"],
+    inputSchema: {
+      type: "object",
+      required: ["bookId", "by", "position"],
+      properties: {
+        bookId: { type: "string", description: "Book id such as bk_ab12cd." },
+        by: { type: "string", description: "Who is reading, e.g. 灵兮 or 沐沐." },
+        position: { type: "string", description: "Where they are, e.g. 第三章 or 56%." },
+        note: { type: "string", description: "Optional note to log alongside this progress update." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args }) {
+      const result = services.bookshelf.updateProgress(args);
+      return {
+        text: `Progress updated: ${args.by} @ ${args.position}.`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "cyberboss_bookshelf_add_note",
+    description: "Add a note or thought to a bookshelf book without changing reading progress, e.g. a reaction to what was just read.",
+    shortHint: "Add a note to a book.",
+    topics: ["bookshelf"],
+    inputSchema: {
+      type: "object",
+      required: ["bookId", "text"],
+      properties: {
+        bookId: { type: "string", description: "Book id such as bk_ab12cd." },
+        by: { type: "string", description: "Who wrote the note, e.g. 灵兮 or 沐沐." },
+        text: { type: "string", description: "Note content." },
+        position: { type: "string", description: "Optional position this note relates to." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args }) {
+      const result = services.bookshelf.addNote(args);
+      return {
+        text: `Note added to ${result.title}.`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "cyberboss_bookshelf_set_status",
+    description: "Change a bookshelf book's status to reading, finished, or paused.",
+    shortHint: "Change a book's status.",
+    topics: ["bookshelf"],
+    inputSchema: {
+      type: "object",
+      required: ["bookId", "status"],
+      properties: {
+        bookId: { type: "string", description: "Book id such as bk_ab12cd." },
+        status: { type: "string", description: "One of reading, finished, paused." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args }) {
+      const result = services.bookshelf.setStatus(args);
+      return {
+        text: `Book status set: ${result.title} -> ${result.status}.`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "cyberboss_bookshelf_set_text",
+    description: "Store the full text of a bookshelf book so it can be read in chunks later. Pass text directly for a short excerpt, or textFile pointing to a .txt file 灵兮 already sent that landed under ~/.cyberboss/inbox. Overwrites any previously stored text for this book. Capped at 3,000,000 characters.",
+    shortHint: "Store a book's full text (inline or from an inbox .txt file).",
+    topics: ["bookshelf"],
+    inputSchema: {
+      type: "object",
+      required: ["bookId"],
+      properties: {
+        bookId: { type: "string", description: "Book id such as bk_ab12cd." },
+        text: { type: "string", description: "Book text to store directly." },
+        textFile: { type: "string", description: "Absolute inbox .txt path under ~/.cyberboss/inbox." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args }) {
+      const result = await services.bookshelf.setText(args);
+      return {
+        text: `Book text stored: ${result.book.title} (${result.textLength} chars).`,
+        data: result,
+      };
+    },
+  },
+  {
+    name: "cyberboss_bookshelf_read_text",
+    description: "Read a bounded chunk of a bookshelf book's stored text, by character offset. Use cyberboss_bookshelf_set_text first. Keep length modest (default and max chunk size are small on purpose) and use the returned nextOffset to continue later instead of dumping the whole book into chat.",
+    shortHint: "Read a bounded chunk of a book's stored text.",
+    topics: ["bookshelf"],
+    inputSchema: {
+      type: "object",
+      required: ["bookId"],
+      properties: {
+        bookId: { type: "string", description: "Book id such as bk_ab12cd." },
+        offset: { type: "integer", description: "Character offset to start from. Defaults to 0." },
+        length: { type: "integer", description: "Max characters to return. Defaults to 4000, capped at 8000." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ services, args }) {
+      const result = services.bookshelf.readText(args);
+      return {
+        text: `Read ${result.text.length} chars from ${result.title} (offset ${result.offset}/${result.totalLength}).`,
+        data: result,
+      };
+    },
+  },
+  {
     name: "cyberboss_reminder_create",
     description: "Create a reminder in Cyberboss.",
     shortHint: "Create a reminder with direct text plus delayMinutes or dueAt.",

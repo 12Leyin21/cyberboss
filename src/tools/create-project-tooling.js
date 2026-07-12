@@ -1,6 +1,7 @@
 const { createWeixinChannelAdapter } = require("../adapters/channel/weixin");
 const { SessionStore } = require("../adapters/runtime/codex/session-store");
 const { createTimelineIntegration } = require("../integrations/timeline");
+const { BookshelfService } = require("../services/bookshelf-service");
 const { ChannelFileService } = require("../services/channel-file-service");
 const { DiaryService } = require("../services/diary-service");
 const { ReminderService } = require("../services/reminder-service");
@@ -24,6 +25,7 @@ function createProjectTooling(config, options = {}) {
   const channelFile = new ChannelFileService({ config, channelAdapter, sessionStore });
   const services = {
     diary: new DiaryService({ config }),
+    bookshelf: new BookshelfService({ config }),
     reminder: new ReminderService({ config, sessionStore }),
     system: new SystemMessageService({ config, sessionStore }),
     channelFile,

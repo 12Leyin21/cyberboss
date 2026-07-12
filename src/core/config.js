@@ -42,6 +42,8 @@ function readConfig() {
     stickerTagsTemplateFile: path.resolve(__dirname, "..", "..", "templates", "stickers", "tags.json"),
     stickerNormalizeGifScript: path.resolve(__dirname, "..", "..", "scripts", "normalize-sticker-gif.js"),
     diaryDir: path.join(stateDir, "diary"),
+    bookshelfFile: path.join(stateDir, "bookshelf.json"),
+    bookshelfTextsDir: path.join(stateDir, "bookshelf-texts"),
     locationStoreFile: path.join(stateDir, "locations.json"),
     locationHost: readTextEnv("CYBERBOSS_LOCATION_HOST") || "0.0.0.0",
     locationPort: readIntEnv("CYBERBOSS_LOCATION_PORT") || 4318,
