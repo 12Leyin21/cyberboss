@@ -242,7 +242,32 @@ function looksLikePlainMedia(bytes, contentType) {
     return true;
   }
 
-  return detectExtensionFromBuffer(bytes) !== "";
+  if (detectExtensionFromBuffer(bytes) !== "") {
+    return true;
+  }
+
+  return looksLikeUtf8Text(bytes);
+}
+
+function looksLikeUtf8Text(bytes) {
+  const sample = bytes.subarray(0, Math.min(bytes.length, 65536));
+  let decoded;
+  try {
+    decoded = new TextDecoder("utf-8", { fatal: true }).decode(sample);
+  } catch {
+    return false;
+  }
+  if (!decoded.length) {
+    return false;
+  }
+  let controlCount = 0;
+  for (let index = 0; index < decoded.length; index += 1) {
+    const code = decoded.charCodeAt(index);
+    if (code < 0x09 || (code > 0x0d && code < 0x20)) {
+      controlCount += 1;
+    }
+  }
+  return controlCount / decoded.length < 0.01;
 }
 
 function buildTargetFileName({ attachment, plaintext, contentType, messageId }) {
