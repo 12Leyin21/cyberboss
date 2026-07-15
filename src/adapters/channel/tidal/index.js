@@ -179,6 +179,21 @@ function createTidalClient(env, config) {
         throw new Error(`tidal channel/out http ${response.status}`);
       }
     },
+    // 把灵兮在微信说的话镜像进 App 聊天流（人类侧），让 App 成为完整档案
+    async mirrorHumanMessage(text) {
+      const content = String(text || "").trim();
+      if (!content) {
+        return;
+      }
+      const response = await fetch(`${env.url}/app/send`, {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ text: content }),
+      });
+      if (!response.ok) {
+        throw new Error(`tidal app/send http ${response.status}`);
+      }
+    },
     async sendFile(filePath) {
       const data = fs.readFileSync(filePath);
       const name = path.basename(filePath);
@@ -234,6 +249,11 @@ function guessMime(name) {
 
 // 分流器：对核心引擎假装还是单通道；Tidal 用户走中继，其余原样走微信。
 // 未配置 Tidal 环境变量时直接返回微信适配器，行为零变化。
+//
+// 无缝衔接（默认开，CYBERBOSS_TIDAL_MERGE=0 关闭）：
+// - App 来的消息伪装成灵兮的微信身份 → 微信和 App 共用同一个会话，上下文连续
+// - 回复按"她最后从哪儿说话"路由：App 来的问题回 App，微信来的回微信
+// - 微信侧的往来（她说的 + 沐沐回的）全部镜像进 App 聊天流，App 即完整档案
 function createChannelAdapter(config) {
   const weixin = createWeixinChannelAdapter(config);
   const env = readTidalEnv();
@@ -241,12 +261,49 @@ function createChannelAdapter(config) {
     return weixin;
   }
   const tidal = createTidalClient(env, config);
-  console.log(`[cyberboss] tidal channel enabled: ${env.url} sender=${env.senderId}`);
+  const mergeEnabled = (process.env.CYBERBOSS_TIDAL_MERGE || "1") !== "0";
+  console.log(`[cyberboss] tidal channel enabled: ${env.url} merge=${mergeEnabled ? "on" : "off"}`);
+
+  let lastOrigin = "weixin";           // 她最近一次从哪个通道说话
+  let loggedMergeTarget = "";
+  const mirroredTexts = new Map();     // 镜像去重：text -> ts（防 SSE 回声触发重复回合）
+
+  function resolveMergeTarget() {
+    if (!mergeEnabled) {
+      return "";
+    }
+    const explicit = (process.env.CYBERBOSS_TIDAL_MERGE_USER || "").trim();
+    const tokens = Object.keys(weixin.getKnownContextTokens());
+    const target = explicit || (tokens.length === 1 ? tokens[0] : "");
+    if (target && target !== loggedMergeTarget) {
+      loggedMergeTarget = target;
+      console.log(`[cyberboss] tidal merge: sessions unified with weixin user ${target}`);
+    }
+    return target;
+  }
+
+  function markMirrored(text) {
+    const now = Date.now();
+    for (const [key, ts] of mirroredTexts) {
+      if (now - ts > 90_000) {
+        mirroredTexts.delete(key);
+      }
+    }
+    mirroredTexts.set(text, now);
+  }
+
+  function consumeMirrored(text) {
+    if (mirroredTexts.has(text)) {
+      mirroredTexts.delete(text);
+      return true;
+    }
+    return false;
+  }
 
   return {
     ...weixin,
     describe() {
-      return { ...weixin.describe(), tidalRelay: env.url };
+      return { ...weixin.describe(), tidalRelay: env.url, tidalMerge: mergeEnabled };
     },
     normalizeIncomingMessage(message) {
       if (message && message.__tidal) {
@@ -254,9 +311,27 @@ function createChannelAdapter(config) {
         const text = [String(message.text || "").trim(), attachmentText]
           .filter(Boolean)
           .join("\n");
-        if (!text) {
-          return null;
+        if (!text || consumeMirrored(text)) {
+          return null;   // 空消息，或是我们自己镜像进去的回声
         }
+        const target = resolveMergeTarget();
+        if (target) {
+          lastOrigin = "tidal";
+          return {
+            provider: "tidal",
+            accountId: weixin.resolveAccount().accountId,
+            workspaceId: config.workspaceId,
+            senderId: target,
+            chatId: target,
+            messageId: String(message.id),
+            threadKey: "",
+            text,
+            attachments: [],
+            contextToken: weixin.getKnownContextTokens()[target] || "",
+            receivedAt: message.ts || new Date().toISOString(),
+          };
+        }
+        // 合并未启用/定不到目标：退回独立会话模式
         return {
           provider: "tidal",
           accountId: "tidal",
@@ -271,27 +346,53 @@ function createChannelAdapter(config) {
           receivedAt: message.ts || new Date().toISOString(),
         };
       }
-      return weixin.normalizeIncomingMessage(message);
+      const normalized = weixin.normalizeIncomingMessage(message);
+      if (normalized && normalized.senderId === resolveMergeTarget()) {
+        lastOrigin = "weixin";
+        // 她在微信说的话镜像进 App 档案（先登记去重，防 SSE 回声）
+        markMirrored(normalized.text);
+        void tidal.mirrorHumanMessage(normalized.text).catch(() => {
+          mirroredTexts.delete(normalized.text);
+        });
+      }
+      return normalized;
     },
     async sendText({ userId, text, contextToken = "", preserveBlock = false }) {
       if (isTidalUserId(userId)) {
         await tidal.sendReply(text);
         return;
       }
+      const merged = userId === resolveMergeTarget();
+      if (merged && lastOrigin === "tidal") {
+        await tidal.sendReply(text);   // 她在 App 问的，回 App
+        return;
+      }
       await weixin.sendText({ userId, text, contextToken, preserveBlock });
+      if (merged) {
+        // 微信侧的回复镜像进 App 档案（失败不影响微信送达）
+        await tidal.sendReply(text).catch(() => {});
+      }
     },
     async sendTyping(args) {
       if (isTidalUserId(args?.userId)) {
         return; // 中继自己管理输入中状态
       }
+      if (args?.userId === resolveMergeTarget() && lastOrigin === "tidal") {
+        return; // 这轮在 App 里，别在微信闪"输入中"
+      }
       await weixin.sendTyping(args);
     },
     async sendFile({ userId, filePath, contextToken = "" }) {
-      if (isTidalUserId(userId)) {
+      const merged = userId === resolveMergeTarget();
+      if (isTidalUserId(userId) || (merged && lastOrigin === "tidal")) {
         await tidal.sendFile(filePath);
         return;
       }
-      return weixin.sendFile({ userId, filePath, contextToken });
+      const result = await weixin.sendFile({ userId, filePath, contextToken });
+      if (merged) {
+        await tidal.sendFile(filePath).catch(() => {});
+      }
+      return result;
     },
     startOutOfBand(onMessage) {
       tidal.start(onMessage);
