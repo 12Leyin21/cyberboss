@@ -783,6 +783,34 @@ async def app_upload(request: Request, name: str = "file"):
     return save_upload_bytes(data, name, mime, "att")
 
 
+@app.post("/phone/health")
+async def phone_health_report(request: Request):
+    """HeartTide app pushes a health summary; the AI reads it back anytime."""
+    check_auth(request)
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="object required")
+    body["reported_at"] = now_iso()
+    path = Path(DB_PATH).parent / "phone_health.json"
+    try:
+        path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass  # 持久化失败不影响本次上报
+    return {"ok": True}
+
+
+@app.get("/phone/health")
+async def phone_health_read(request: Request):
+    check_auth(request)
+    path = Path(DB_PATH).parent / "phone_health.json"
+    if not path.exists():
+        return {"reported_at": None}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"reported_at": None}
+
+
 @app.post("/app/edit")
 async def app_edit(request: Request):
     """Edit one of the human's own messages in place."""
