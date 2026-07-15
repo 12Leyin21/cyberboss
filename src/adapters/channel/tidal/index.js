@@ -267,6 +267,31 @@ function createChannelAdapter(config) {
   let lastOrigin = "weixin";           // 她最近一次从哪个通道说话
   let loggedMergeTarget = "";
   const mirroredTexts = new Map();     // 镜像去重：text -> ts（防 SSE 回声触发重复回合）
+  const mergeTargetFile = path.join(config.stateDir, "tidal-merge-target.json");
+  let adoptedTarget = loadAdoptedTarget();
+
+  function loadAdoptedTarget() {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(mergeTargetFile, "utf8"));
+      return typeof parsed?.userId === "string" ? parsed.userId : "";
+    } catch {
+      return "";
+    }
+  }
+
+  // 单用户部署：她在微信发的第一条消息即认定为合并目标，永久记住
+  function adoptMergeTarget(userId) {
+    if (!userId || adoptedTarget === userId) {
+      return;
+    }
+    adoptedTarget = userId;
+    try {
+      fs.mkdirSync(path.dirname(mergeTargetFile), { recursive: true });
+      fs.writeFileSync(mergeTargetFile, JSON.stringify({ userId }));
+    } catch {
+      // 写不进也不致命，进程存活期间内存值仍有效
+    }
+  }
 
   function resolveMergeTarget() {
     if (!mergeEnabled) {
@@ -274,14 +299,14 @@ function createChannelAdapter(config) {
     }
     const explicit = (process.env.CYBERBOSS_TIDAL_MERGE_USER || "").trim();
     const tokens = Object.keys(weixin.getKnownContextTokens());
-    const target = explicit || (tokens.length === 1 ? tokens[0] : "");
+    const target = explicit || adoptedTarget || (tokens.length === 1 ? tokens[0] : "");
     if (target && target !== loggedMergeTarget) {
       loggedMergeTarget = target;
       console.log(`[cyberboss] tidal merge: sessions unified with weixin user ${target}`);
     }
     if (!target && loggedMergeTarget !== "unresolved") {
       loggedMergeTarget = "unresolved";
-      console.log(`[cyberboss] tidal merge: cannot pick target (known weixin users: ${tokens.join(", ") || "none"}); set CYBERBOSS_TIDAL_MERGE_USER`);
+      console.log(`[cyberboss] tidal merge: no target yet (known weixin users: ${tokens.join(", ") || "none"}); will adopt her next weixin message`);
     }
     return target;
   }
@@ -351,13 +376,20 @@ function createChannelAdapter(config) {
         };
       }
       const normalized = weixin.normalizeIncomingMessage(message);
-      if (normalized && normalized.senderId === resolveMergeTarget()) {
-        lastOrigin = "weixin";
-        // 她在微信说的话镜像进 App 档案（先登记去重，防 SSE 回声）
-        markMirrored(normalized.text);
-        void tidal.mirrorHumanMessage(normalized.text).catch(() => {
-          mirroredTexts.delete(normalized.text);
-        });
+      if (normalized && mergeEnabled) {
+        if (!resolveMergeTarget()) {
+          adoptMergeTarget(normalized.senderId);
+          console.log(`[cyberboss] tidal merge: adopted weixin user ${normalized.senderId}`);
+        }
+        if (normalized.senderId === resolveMergeTarget()) {
+          lastOrigin = "weixin";
+          // 她在微信说的话镜像进 App 档案（先登记去重，防 SSE 回声）
+          markMirrored(normalized.text);
+          void tidal.mirrorHumanMessage(normalized.text).catch((error) => {
+            mirroredTexts.delete(normalized.text);
+            console.error(`[cyberboss] tidal mirror failed: ${error?.message || error}`);
+          });
+        }
       }
       return normalized;
     },
