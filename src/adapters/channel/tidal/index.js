@@ -279,6 +279,10 @@ function createChannelAdapter(config) {
       loggedMergeTarget = target;
       console.log(`[cyberboss] tidal merge: sessions unified with weixin user ${target}`);
     }
+    if (!target && loggedMergeTarget !== "unresolved") {
+      loggedMergeTarget = "unresolved";
+      console.log(`[cyberboss] tidal merge: cannot pick target (known weixin users: ${tokens.join(", ") || "none"}); set CYBERBOSS_TIDAL_MERGE_USER`);
+    }
     return target;
   }
 
