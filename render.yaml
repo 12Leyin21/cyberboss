@@ -1,17 +1,20 @@
 services:
-  - type: worker
-    name: cyberboss
+  # 合并后的唯一付费服务：Tidal 中继（对外，服务手机 App/PWA）+ cyberboss 大脑（微信 + Tidal）
+  # 同一容器双进程，共享 /data 持久盘（账号状态、Claude 登录、聊天库、上传文件）
+  - type: web
+    name: hearttide-brain
     env: docker
     region: oregon
     plan: starter
     dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
     envVars:
       - key: CYBERBOSS_USER_NAME
         value: 灵兮
       - key: CYBERBOSS_USER_GENDER
         value: female
       - key: CYBERBOSS_ACCOUNT_ID
-        sync: false          # set in Render dashboard once accounts are logged in
+        sync: false          # 从旧 cyberboss 服务里抄过来
       - key: CYBERBOSS_WORKSPACE_ROOT
         value: /app/cyberboss-workspace-main
       - key: CYBERBOSS_RUNTIME
@@ -26,7 +29,26 @@ services:
         value: "200000"
       - key: CYBERBOSS_CLAUDE_EXTRA_ARGS
         value: --effort,medium
+      # ---- Tidal 中继（同容器） ----
+      - key: RELAY_SECRET
+        sync: false          # 沿用原 tidal-echo-backend 的 RELAY_SECRET
+      - key: RELAY_AI_NAME
+        value: 盛沐
+      - key: RELAY_HUMAN_NAME
+        value: 灵兮
+      - key: RELAY_DB
+        value: /data/relay/relay.db
+      - key: RELAY_UPLOAD_DIR
+        value: /data/relay/uploads
+      - key: RELAY_BRAIN_FILE
+        value: /data/relay/brain_target
+      - key: RELAY_PUBLIC_PREFIX
+        value: ""
+      - key: RELAY_APP_PATH
+        value: https://tidal-echo-web.onrender.com/
+      - key: RELAY_ALLOW_ORIGINS
+        value: https://tidal-echo-web.onrender.com
     disk:
-      name: cyberboss-data
+      name: hearttide-data
       mountPath: /data
       sizeGB: 2
