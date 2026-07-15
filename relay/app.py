@@ -783,6 +783,56 @@ async def app_upload(request: Request, name: str = "file"):
     return save_upload_bytes(data, name, mime, "att")
 
 
+@app.post("/app/edit")
+async def app_edit(request: Request):
+    """Edit one of the human's own messages in place."""
+    check_auth(request)
+    body = await request.json()
+    try:
+        target_id = int(body.get("id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="numeric id required")
+    text = str(body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="empty text")
+    with db() as conn:
+        row = conn.execute("SELECT * FROM messages WHERE id = ?", (target_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="not found")
+        if row["direction"] != "in":
+            raise HTTPException(status_code=403, detail="can only edit your own messages")
+        meta = json.loads(row["meta"] or "{}")
+        meta["edited"] = True
+        conn.execute(
+            "UPDATE messages SET text = ?, meta = ? WHERE id = ?",
+            (text, json.dumps(meta, ensure_ascii=False), target_id),
+        )
+        conn.commit()
+    await broadcast(app_subs, {"type": "edit", "id": target_id, "text": text})
+    return {"id": target_id, "text": text}
+
+
+@app.post("/app/delete")
+async def app_delete(request: Request):
+    """Recall (delete) one of the human's own messages."""
+    check_auth(request)
+    body = await request.json()
+    try:
+        target_id = int(body.get("id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="numeric id required")
+    with db() as conn:
+        row = conn.execute("SELECT direction FROM messages WHERE id = ?", (target_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="not found")
+        if row["direction"] != "in":
+            raise HTTPException(status_code=403, detail="can only recall your own messages")
+        conn.execute("DELETE FROM messages WHERE id = ?", (target_id,))
+        conn.commit()
+    await broadcast(app_subs, {"type": "delete", "id": target_id})
+    return {"id": target_id, "deleted": True}
+
+
 @app.get("/uploads/{name}")
 async def uploads(request: Request, name: str):
     check_auth(request)
