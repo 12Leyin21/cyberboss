@@ -22,7 +22,7 @@ services:
       - key: CYBERBOSS_CLAUDE_COMMAND
         value: claude
       - key: CYBERBOSS_CLAUDE_PERMISSION_MODE
-        value: default
+        value: bypassPermissions   # 灵兮授权：工具调用自动放行，存记忆时口头提一句即可
       - key: CYBERBOSS_CLAUDE_MODEL
         value: claude-sonnet-4-6
       - key: CYBERBOSS_CLAUDE_CONTEXT_WINDOW
