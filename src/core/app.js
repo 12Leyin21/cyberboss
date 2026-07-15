@@ -2,7 +2,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const fs = require("fs");
-const { createWeixinChannelAdapter } = require("../adapters/channel/weixin");
+const { createChannelAdapter } = require("../adapters/channel/tidal");
 const { DEFAULT_MIN_WEIXIN_CHUNK, MAX_MIN_WEIXIN_CHUNK } = require("../adapters/channel/weixin/config-store");
 const { persistIncomingWeixinAttachments } = require("../adapters/channel/weixin/media-receive");
 const { createCodexRuntimeAdapter } = require("../adapters/runtime/codex");
@@ -61,7 +61,7 @@ function createRuntimeAdapter(config) {
 class CyberbossApp {
   constructor(config) {
     this.config = config;
-    this.channelAdapter = createWeixinChannelAdapter(config);
+    this.channelAdapter = createChannelAdapter(config);
     this.timelineIntegration = createTimelineIntegration(config);
     const projectTooling = createProjectTooling(config, {
       channelAdapter: this.channelAdapter,
@@ -148,6 +148,14 @@ class CyberbossApp {
       await this.ensureLocationServerStarted();
     }
     console.log("[cyberboss] bridge loop started; waiting for WeChat messages.");
+    if (typeof this.channelAdapter.startOutOfBand === "function") {
+      // Tidal 中继通道：SSE 实时进消息，走与微信相同的 inbound 流程
+      this.channelAdapter.startOutOfBand((message) => {
+        void this.handleIncomingMessage(message).catch((error) => {
+          console.error(`[cyberboss] tidal inbound failed: ${formatErrorMessage(error)}`);
+        });
+      });
+    }
     if (this.config.startWithCheckin) {
       console.log("[cyberboss] checkin: enabled");
       void runSystemCheckinPoller(this.config).catch((error) => {
@@ -156,6 +164,7 @@ class CyberbossApp {
     }
 
     const shutdown = createShutdownController(async () => {
+      this.channelAdapter.stopOutOfBand?.();
       this.clearPendingImageInboundTimers();
       await this.closeLocationServer();
       await this.runtimeAdapter.close();
