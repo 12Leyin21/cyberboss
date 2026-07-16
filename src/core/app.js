@@ -174,6 +174,7 @@ class CyberbossApp {
       let consecutiveFailures = 0;
       while (!shutdown.stopped) {
         try {
+          this.sweepStaleTurnGates();
           await Promise.all([
             this.flushDueReminders(account),
             this.flushPendingInboundMessages(),
@@ -1160,6 +1161,20 @@ class CyberbossApp {
     }
   }
 
+  // 看门狗：门闸超过 10 分钟没有任何运行时活动 = 卡死，破拆放行并冲洗积压消息
+  sweepStaleTurnGates() {
+    const STALE_GATE_MS = 10 * 60 * 1000;
+    const stale = this.turnGateStore.staleScopeKeys(STALE_GATE_MS);
+    if (!stale.length) {
+      return;
+    }
+    for (const scopeKey of stale) {
+      console.warn(`[cyberboss] watchdog: force-releasing wedged turn gate ${scopeKey}`);
+      this.turnGateStore.forceReleaseScopeKey(scopeKey);
+    }
+    void this.flushPendingInboundMessages().catch(() => {});
+  }
+
   async handleCompactCommand(normalized) {
     const bindingKey = this.runtimeAdapter.getSessionStore().buildBindingKey({
       workspaceId: normalized.workspaceId,
@@ -1175,6 +1190,20 @@ class CyberbossApp {
         text: "💡 There is no active thread yet. Send a normal message first.",
         contextToken: normalized.contextToken,
       });
+      return;
+    }
+
+    // 等当前回合结束再压缩：并发注入会打乱回合记账（2026-07-16 线程静默事故）
+    const gateWaitDeadline = Date.now() + 90_000;
+    while (this.turnGateStore.isPending(bindingKey, workspaceRoot) && Date.now() < gateWaitDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+    if (this.turnGateStore.isPending(bindingKey, workspaceRoot)) {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: "⏳ A turn is still running. Try /compact again once it finishes.",
+        contextToken: normalized.contextToken,
+      }).catch(() => {});
       return;
     }
 
@@ -1473,6 +1502,8 @@ class CyberbossApp {
   }
 
   async handleRuntimeEvent(event) {
+    // 有活动就刷新门闸时间戳；卡死的门闸交给看门狗破拆
+    this.turnGateStore.touchThread(event?.payload?.threadId);
     const failureReplyTarget = event?.type === "runtime.turn.failed"
       ? this.streamDelivery.resolveReplyTargetForRun({
           threadId: event?.payload?.threadId,
