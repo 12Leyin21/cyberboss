@@ -23,6 +23,8 @@ services:
         value: claude
       - key: CYBERBOSS_CLAUDE_PERMISSION_MODE
         value: bypassPermissions   # 灵兮授权：工具调用自动放行，存记忆时口头提一句即可
+      - key: IS_SANDBOX
+        value: "1"                 # 容器内以 root 跑 claude，bypass 模式需要此放行
       - key: CYBERBOSS_CLAUDE_MODEL
         value: claude-sonnet-4-6
       - key: CYBERBOSS_CLAUDE_CONTEXT_WINDOW
