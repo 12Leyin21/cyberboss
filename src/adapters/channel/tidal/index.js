@@ -1,6 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { createWeixinChannelAdapter } = require("../weixin");
+const { createWeixinChannelAdapter, chunkReplyTextForWeixin } = require("../weixin");
 
 // Tidal_Echo relay channel: lets the same brain serve the HeartTide phone app
 // alongside WeChat. Enabled only when both env vars are present:
@@ -170,13 +170,20 @@ function createTidalClient(env, config) {
       if (!content) {
         return;
       }
-      const response = await fetch(`${env.url}/channel/out`, {
-        method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ type: "reply", text: content }),
-      });
-      if (!response.ok) {
-        throw new Error(`tidal channel/out http ${response.status}`);
+      // 长回复按自然段落切成几条小消息（微信手感）；协议消息保持完整不切
+      const chunks = shouldKeepWhole(content) ? [content] : splitForApp(content);
+      for (let index = 0; index < chunks.length; index += 1) {
+        const response = await fetch(`${env.url}/channel/out`, {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ type: "reply", text: chunks[index] }),
+        });
+        if (!response.ok) {
+          throw new Error(`tidal channel/out http ${response.status}`);
+        }
+        if (index < chunks.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 450));
+        }
       }
     },
     // 把灵兮在微信说的话镜像进 App 聊天流（人类侧），让 App 成为完整档案
@@ -234,6 +241,32 @@ function createTidalClient(env, config) {
         .join("\n");
     },
   };
+}
+
+// 心潮 App 靠开头标记识别的协议消息，切碎就认不出来了
+const PROTOCOL_PREFIXES = ["📔", "🏆", "📚", "📌", "💌", "⏰", "✅", "「回复："];
+
+function shouldKeepWhole(text) {
+  if (text.length <= 160) {
+    return true;
+  }
+  if (PROTOCOL_PREFIXES.some((prefix) => text.startsWith(prefix))) {
+    return true;
+  }
+  if (text.includes("open.spotify.com")) {
+    return true;
+  }
+  return false;
+}
+
+// 自然断句：段落优先、句尾兜底、碎片自动合并（复用微信的断句器，段长下限 60 字）
+function splitForApp(text) {
+  try {
+    const chunks = chunkReplyTextForWeixin(text, 60);
+    return chunks && chunks.length ? chunks : [text];
+  } catch {
+    return [text];
+  }
 }
 
 function guessMime(name) {
