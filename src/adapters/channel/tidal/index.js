@@ -295,7 +295,10 @@ function createChannelAdapter(config) {
   }
   const tidal = createTidalClient(env, config);
   const mergeEnabled = (process.env.CYBERBOSS_TIDAL_MERGE || "1") !== "0";
-  console.log(`[cyberboss] tidal channel enabled: ${env.url} merge=${mergeEnabled ? "on" : "off"}`);
+  // 镜像默认关（灵兮 2026-07-17 定）：记忆无缝靠会话合并即可，聊天记录不搬运。
+  // 设 CYBERBOSS_TIDAL_MIRROR=1 可重新打开。
+  const mirrorEnabled = (process.env.CYBERBOSS_TIDAL_MIRROR || "0") === "1";
+  console.log(`[cyberboss] tidal channel enabled: ${env.url} merge=${mergeEnabled ? "on" : "off"} mirror=${mirrorEnabled ? "on" : "off"}`);
 
   let lastOrigin = "weixin";           // 她最近一次从哪个通道说话
   let loggedMergeTarget = "";
@@ -416,12 +419,14 @@ function createChannelAdapter(config) {
         }
         if (normalized.senderId === resolveMergeTarget()) {
           lastOrigin = "weixin";
-          // 她在微信说的话镜像进 App 档案（先登记去重，防 SSE 回声）
-          markMirrored(normalized.text);
-          void tidal.mirrorHumanMessage(normalized.text).catch((error) => {
-            mirroredTexts.delete(normalized.text);
-            console.error(`[cyberboss] tidal mirror failed: ${error?.message || error}`);
-          });
+          if (mirrorEnabled) {
+            // 她在微信说的话镜像进 App 档案（先登记去重，防 SSE 回声）
+            markMirrored(normalized.text);
+            void tidal.mirrorHumanMessage(normalized.text).catch((error) => {
+              mirroredTexts.delete(normalized.text);
+              console.error(`[cyberboss] tidal mirror failed: ${error?.message || error}`);
+            });
+          }
         }
       }
       return normalized;
@@ -437,7 +442,7 @@ function createChannelAdapter(config) {
         return;
       }
       await weixin.sendText({ userId, text, contextToken, preserveBlock });
-      if (merged) {
+      if (merged && mirrorEnabled) {
         // 微信侧的回复镜像进 App 档案（失败不影响微信送达）
         await tidal.sendReply(text).catch(() => {});
       }
@@ -458,7 +463,7 @@ function createChannelAdapter(config) {
         return;
       }
       const result = await weixin.sendFile({ userId, filePath, contextToken });
-      if (merged) {
+      if (merged && mirrorEnabled) {
         await tidal.sendFile(filePath).catch(() => {});
       }
       return result;
