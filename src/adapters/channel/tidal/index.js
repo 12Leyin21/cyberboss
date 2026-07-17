@@ -298,8 +298,8 @@ function createTidalClient(env, config) {
 const PROTOCOL_PREFIXES = ["📔", "🏆", "📚", "📌", "💌", "⏰", "✅", "「回复："];
 
 function shouldKeepWhole(text) {
-  if (text.length <= 160) {
-    return true;
+  if (text.length <= 160 && !text.includes("\n\n")) {
+    return true;   // 短且没有段落边界才整条发
   }
   if (PROTOCOL_PREFIXES.some((prefix) => text.startsWith(prefix))) {
     return true;
@@ -310,14 +310,23 @@ function shouldKeepWhole(text) {
   return false;
 }
 
-// 自然断句：段落优先、句尾兜底、碎片自动合并（复用微信的断句器，段长下限 60 字）
+// 微信式自然断句：空行=必切（每个自然段一条消息，不合并短段）；
+// 单段超长时才用微信断句器再细分
 function splitForApp(text) {
-  try {
-    const chunks = chunkReplyTextForWeixin(text, 60);
-    return chunks && chunks.length ? chunks : [text];
-  } catch {
-    return [text];
+  const paragraphs = text.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+  const chunks = [];
+  for (const paragraph of paragraphs) {
+    if (paragraph.length <= 500) {
+      chunks.push(paragraph);
+      continue;
+    }
+    try {
+      chunks.push(...chunkReplyTextForWeixin(paragraph, 60));
+    } catch {
+      chunks.push(paragraph);
+    }
   }
+  return chunks.length ? chunks : [text];
 }
 
 function guessMime(name) {
