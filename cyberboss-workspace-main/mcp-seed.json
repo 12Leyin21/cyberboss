@@ -7,6 +7,20 @@
     "spicy-monopoly": {
       "type": "http",
       "url": "https://spicy-monopoly.lol/mcp"
+    },
+    "my-browser": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp",
+        "--headless",
+        "--isolated",
+        "--executablePath",
+        "/usr/local/bin/chromium-ai"
+      ],
+      "env": {
+        "CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS": "true"
+      }
     }
   }
 }
