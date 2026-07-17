@@ -60,6 +60,54 @@ function createTidalClient(env, config) {
     return { __tidal: true, id, text: String(text || ""), ts: ts || "", attachments: attachments || [] };
   }
 
+  // 附件预下载到本地收件箱：给大脑文件路径而不是 http 链接（它的工具读本地文件最顺）
+  const inboxDir = path.join(config.stateDir, "tidal-inbox");
+
+  function pruneInbox() {
+    try {
+      const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+      for (const name of fs.readdirSync(inboxDir)) {
+        const file = path.join(inboxDir, name);
+        if (fs.statSync(file).mtimeMs < cutoff) {
+          fs.unlinkSync(file);
+        }
+      }
+    } catch {
+      // 收件箱清理失败不致命
+    }
+  }
+
+  async function localizeAttachments(attachments) {
+    if (!Array.isArray(attachments) || !attachments.length) {
+      return [];
+    }
+    fs.mkdirSync(inboxDir, { recursive: true });
+    pruneInbox();
+    const localized = [];
+    for (const attachment of attachments) {
+      const entry = { ...attachment };
+      try {
+        const url = String(attachment?.url || "");
+        const absolute = url.startsWith("http") ? url : `${env.url}${url}`;
+        const response = await fetch(absolute, { headers: authHeaders() });
+        if (!response.ok) {
+          throw new Error(`http ${response.status}`);
+        }
+        const buf = Buffer.from(await response.arrayBuffer());
+        const safeName = `${Date.now()}-${String(attachment?.name || "file")
+          .replace(/[^\w.\-一-鿿]/g, "_")
+          .slice(-60)}`;
+        const filePath = path.join(inboxDir, safeName);
+        fs.writeFileSync(filePath, buf);
+        entry.localPath = filePath;
+      } catch (error) {
+        console.warn(`[cyberboss] tidal attachment download failed: ${error?.message || error}`);
+      }
+      localized.push(entry);
+    }
+    return localized;
+  }
+
   // 掉线期间灵兮发的消息从历史接口补齐
   async function catchUp(onMessage) {
     let since = lastId;
@@ -86,7 +134,7 @@ function createTidalClient(env, config) {
             id,
             text: message.text,
             ts: message.ts,
-            attachments: message?.meta?.attachments,
+            attachments: await localizeAttachments(message?.meta?.attachments),
           }));
         }
         saveLastId(id);
@@ -141,7 +189,7 @@ function createTidalClient(env, config) {
               id,
               text: payload.content,
               ts: payload.ts,
-              attachments: payload.attachments,
+              attachments: await localizeAttachments(payload.attachments),
             }));
           }
         }
@@ -233,9 +281,12 @@ function createTidalClient(env, config) {
       }
       return attachments
         .map((attachment) => {
+          const kind = attachment?.kind === "image" ? "图片" : (attachment?.kind === "audio" ? "语音" : "文件");
+          if (attachment?.localPath) {
+            return `[${kind}附件·已下载到本机] ${attachment.localPath} （用 Read 工具直接查看）`;
+          }
           const url = String(attachment?.url || "");
           const absolute = url.startsWith("http") ? url : `${env.url}${url}`;
-          const kind = attachment?.kind === "image" ? "图片" : (attachment?.kind === "audio" ? "语音" : "文件");
           return `[${kind}附件] ${absolute}?token=${env.secret}`;
         })
         .join("\n");
