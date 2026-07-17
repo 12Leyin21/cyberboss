@@ -7,15 +7,9 @@ FROM node:22-bookworm-slim
 
 # curl 用于装 Claude Code 原生安装器；git 用于装 package.json 里那两个 github: 依赖；
 # imagemagick 用于把静态图表情包转成 GIF（Linux 上没有 macOS 的 sips）；
-# python3/pip 用于同容器内跑 Tidal 中继（FastAPI）；
-# chromium + 中文/emoji 字体：大脑专属的无头浏览器（chrome-devtools-mcp 用）
+# python3/pip 用于同容器内跑 Tidal 中继（FastAPI）
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git imagemagick python3 python3-pip \
-    chromium fonts-noto-cjk fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/*
-
-# 容器内以 root 跑 Chromium 需要关沙箱；/dev/shm 小需要禁用 shm
-RUN printf '#!/bin/sh\nexec /usr/bin/chromium --no-sandbox --disable-dev-shm-usage --disable-gpu "$@"\n' > /usr/local/bin/chromium-ai \
-    && chmod +x /usr/local/bin/chromium-ai
 
 # 装 Claude Code CLI（原生安装器，不依赖 npm 包）
 RUN curl -fsSL https://claude.ai/install.sh | bash -s stable
