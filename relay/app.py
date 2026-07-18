@@ -799,6 +799,62 @@ async def phone_health_report(request: Request):
     return {"ok": True}
 
 
+@app.post("/phone/books")
+async def phone_books_report(request: Request):
+    """HeartTide app pushes the bookshelf (titles/progress/marks, no full text)."""
+    check_auth(request)
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="object required")
+    body["reported_at"] = now_iso()
+    path = Path(DB_PATH).parent / "phone_books.json"
+    try:
+        path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+@app.post("/phone/browser")
+async def phone_browser_report(request: Request):
+    """Her Mac reports the current browser tunnel URL + auth token."""
+    check_auth(request)
+    body = await request.json()
+    if not isinstance(body, dict) or not body.get("url"):
+        raise HTTPException(status_code=400, detail="url required")
+    body["reported_at"] = now_iso()
+    path = Path(DB_PATH).parent / "browser_target.json"
+    try:
+        path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+@app.get("/phone/browser")
+async def phone_browser_read(request: Request):
+    check_auth(request)
+    path = Path(DB_PATH).parent / "browser_target.json"
+    if not path.exists():
+        return {"url": None}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"url": None}
+
+
+@app.get("/phone/books")
+async def phone_books_read(request: Request):
+    check_auth(request)
+    path = Path(DB_PATH).parent / "phone_books.json"
+    if not path.exists():
+        return {"reported_at": None, "books": []}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"reported_at": None, "books": []}
+
+
 @app.get("/phone/health")
 async def phone_health_read(request: Request):
     check_auth(request)

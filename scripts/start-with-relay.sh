@@ -26,6 +26,10 @@ if [[ -n "${PORT:-}" && -n "${RELAY_SECRET:-}" ]]; then
   RELAY_PID=$!
   echo "[start-with-relay] relay pid=${RELAY_PID} port=${PORT}"
 
+  # 浏览器小桥：大脑用固定地址 127.0.0.1:9333 操作她 Mac 上的隧道浏览器
+  node scripts/browser-bridge.js &
+  echo "[start-with-relay] browser-bridge pid=$!"
+
   start_bridge_loop &
   BRIDGE_LOOP_PID=$!
   echo "[start-with-relay] bridge loop pid=${BRIDGE_LOOP_PID}"
