@@ -54,6 +54,9 @@ SECRET = os.environ.get("RELAY_SECRET", "")
 DB_PATH = os.environ.get("RELAY_DB", str(Path(__file__).parent / "relay.db"))
 PORT = int(os.environ.get("RELAY_PORT", "3011"))
 UPLOAD_DIR = Path(os.environ.get("RELAY_UPLOAD_DIR", str(Path(__file__).parent / "uploads")))
+# cyberboss (same container) writes diary entries under $CYBERBOSS_STATE_DIR/diary
+# (default state dir is $HOME/.cyberboss — see src/core/config.js's stateDir/diaryDir).
+DIARY_DIR = Path(os.environ.get("CYBERBOSS_STATE_DIR", str(Path.home() / ".cyberboss"))) / "diary"
 PUBLIC_PREFIX = os.environ.get("RELAY_PUBLIC_PREFIX", "/relay").rstrip("/")
 APP_PATH = os.environ.get("RELAY_APP_PATH", "/")  # where a push-notification tap opens the PWA
 ALLOW_ORIGINS = [o.strip() for o in os.environ.get(
@@ -865,6 +868,39 @@ async def phone_health_read(request: Request):
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {"reported_at": None}
+
+
+@app.get("/diary")
+async def diary_list(request: Request):
+    """List available diary dates (YYYY-MM-DD), oldest first."""
+    check_auth(request)
+    if not DIARY_DIR.exists():
+        return {"dates": []}
+    dates = sorted(p.stem for p in DIARY_DIR.glob("*.md"))
+    return {"dates": dates}
+
+
+@app.get("/diary/latest")
+async def diary_latest(request: Request):
+    """The most recent diary entry's full markdown content."""
+    check_auth(request)
+    files = sorted(DIARY_DIR.glob("*.md")) if DIARY_DIR.exists() else []
+    if not files:
+        raise HTTPException(status_code=404, detail="no diary entries yet")
+    latest = files[-1]
+    return {"date": latest.stem, "content": latest.read_text(encoding="utf-8")}
+
+
+@app.get("/diary/{date}")
+async def diary_read(request: Request, date: str):
+    """One day's diary markdown, by date (YYYY-MM-DD)."""
+    check_auth(request)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    path = DIARY_DIR / f"{date}.md"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="not found")
+    return {"date": date, "content": path.read_text(encoding="utf-8")}
 
 
 @app.post("/app/edit")
