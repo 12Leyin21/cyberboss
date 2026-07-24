@@ -2,7 +2,7 @@
   "mcpServers": {
     "ombre-brain": {
       "type": "http",
-      "url": "https://ombre-brain-fsps.onrender.com/mcp"
+      "url": "https://ombre-brain-cotj.onrender.com/mcp"
     },
     "spicy-monopoly": {
       "type": "http",
