@@ -732,6 +732,15 @@ async def channel_out(request: Request):
         await broadcast(app_subs, {"type": "typing", "active": False})
         return {"id": target_id, "reactions": reactions}
     text = body.get("text", "")
+    # 五子棋拦截：回复里带落子坐标且轮到 AI → 裁判应用；非法落子直接 400 让 AI 重下
+    if kind == "reply":
+        gomoku_result = gomoku_try_apply_ai_reply(text)
+        if gomoku_result is not None:
+            if gomoku_result:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"五子棋裁判：{gomoku_result}。请以「♟️ 落子 H8 一句话」的格式重新回复")
+            kind = "gomoku"   # 应用成功：转为对局消息，聊天页不显示、不推送通知
     meta = {k: v for k, v in body.items() if k not in ("type", "text")}
     msg = save_message("out", kind, text, meta)
     # the AI replied — clear the typing state
@@ -784,6 +793,210 @@ async def app_upload(request: Request, name: str = "file"):
         raise HTTPException(status_code=400, detail="empty file")
     mime = request.headers.get("content-type", "application/octet-stream")
     return save_upload_bytes(data, name, mime, "att")
+
+
+# ---- 五子棋（2026-07-24）：她在心潮 App 落子，沐沐通过聊天通道应子 ----------
+#
+# 状态存 gomoku.json（棋盘 15×15，列 A-O、行 1-15）。她执黑（●）先手可选。
+# 她落子 → 注入一条 kind="gomoku" 的通道消息（带 ASCII 棋盘）给 AI；
+# AI 用普通 reply 回复「♟️ 落子 H8 想说的话」→ channel_out 拦截解析、
+# 裁判合法性和五连，坐标后面的话作为对局留言展示在棋盘下方。
+# kind="gomoku" 的消息不推送通知，App 聊天页也会过滤掉，不刷屏。
+
+GOMOKU_SIZE = 15
+GOMOKU_PATH = Path(DB_PATH).parent / "gomoku.json"
+GOMOKU_MOVE_RE = re.compile(r"落子\s*[·:：]?\s*([A-Oa-o])\s*-?\s*(\d{1,2})")
+
+
+def gomoku_load() -> dict:
+    try:
+        state = json.loads(GOMOKU_PATH.read_text(encoding="utf-8"))
+        if isinstance(state, dict) and isinstance(state.get("moves"), list):
+            return state
+    except Exception:
+        pass
+    return {"moves": [], "winner": "", "comment": "", "started_at": "", "active": False}
+
+
+def gomoku_save(state: dict) -> None:
+    GOMOKU_PATH.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+
+def gomoku_grid(state: dict) -> list[list[str]]:
+    grid = [["" for _ in range(GOMOKU_SIZE)] for _ in range(GOMOKU_SIZE)]
+    for move in state["moves"]:
+        grid[move["row"]][move["col"]] = move["who"]
+    return grid
+
+
+def gomoku_current_player(state: dict) -> str:
+    """以首手玩家为基准的奇偶轮转（支持 AI 先手的对局）。"""
+    if not state.get("active") or state.get("winner"):
+        return ""
+    first = state.get("first", "human")
+    second = "ai" if first == "human" else "human"
+    return first if len(state["moves"]) % 2 == 0 else second
+
+
+def gomoku_check_win(grid: list[list[str]], row: int, col: int) -> bool:
+    who = grid[row][col]
+    for dr, dc in ((0, 1), (1, 0), (1, 1), (1, -1)):
+        count = 1
+        for sign in (1, -1):
+            r, c = row + dr * sign, col + dc * sign
+            while 0 <= r < GOMOKU_SIZE and 0 <= c < GOMOKU_SIZE and grid[r][c] == who:
+                count += 1
+                r += dr * sign
+                c += dc * sign
+        if count >= 5:
+            return True
+    return False
+
+
+def gomoku_coord_label(col: int, row: int) -> str:
+    return f"{chr(ord('A') + col)}{row + 1}"
+
+
+def gomoku_board_text(state: dict) -> str:
+    grid = gomoku_grid(state)
+    header = "   " + " ".join(chr(ord("A") + c) for c in range(GOMOKU_SIZE))
+    lines = [header]
+    for r in range(GOMOKU_SIZE):
+        cells = " ".join(
+            "●" if grid[r][c] == "human" else "○" if grid[r][c] == "ai" else "·"
+            for c in range(GOMOKU_SIZE)
+        )
+        lines.append(f"{r + 1:>2} {cells}")
+    return "\n".join(lines)
+
+
+async def gomoku_notify_ai(state: dict, event: str) -> None:
+    """把棋局进展作为 kind=gomoku 的通道消息推给 AI。"""
+    last = state["moves"][-1] if state["moves"] else None
+    last_label = gomoku_coord_label(last["col"], last["row"]) if last else "—"
+    if state.get("winner") == "human":
+        prompt = f"她落子 {last_label}，五连成线——她赢了这一局！🎉 回她一句祝贺或吐槽（不用带落子坐标）。"
+    elif event == "undo":
+        prompt = "她悔棋了（撤回了最近的往返两步）。棋盘如下，轮到她重下，你等着就好，可以调侃一句（不用带落子坐标）。"
+    elif event == "new_ai_first":
+        prompt = "新开一局五子棋，这局你先手（执白 ○）。回复必须以「♟️ 落子 H8」这种格式开头（列 A-O + 行 1-15），坐标后面接你想说的一句话。"
+    else:
+        prompt = (
+            f"她落子 {last_label}。轮到你了（你执白 ○，她执黑 ●）。"
+            "回复必须以「♟️ 落子 H8」这种格式开头（列 A-O + 行 1-15），坐标后面接你想说的一句话。"
+            "认真下但别杀气太重，这是陪她玩。"
+        )
+    text = f"♟️ [五子棋] {prompt}\n\n{gomoku_board_text(state)}"
+    msg = save_message("in", "gomoku", text, {"user": "human"})
+    await broadcast(plugin_subs, plugin_payload(msg))
+
+
+@app.get("/app/gomoku/state")
+async def gomoku_state(request: Request):
+    check_auth(request)
+    state = gomoku_load()
+    return {
+        "active": state.get("active", False),
+        "moves": state["moves"],
+        "turn": gomoku_current_player(state),
+        "winner": state.get("winner", ""),
+        "comment": state.get("comment", ""),
+        "started_at": state.get("started_at", ""),
+    }
+
+
+@app.post("/app/gomoku/new")
+async def gomoku_new(request: Request):
+    check_auth(request)
+    body = await request.json()
+    ai_first = bool(body.get("ai_first"))
+    # 轮转以先手方为基准（gomoku_current_player）；棋子颜色在 App 端按 who 渲染，
+    # 她永远是深色子、沐沐永远是浅色子，谁先手只影响出手顺序。
+    state = {"moves": [], "winner": "", "comment": "", "started_at": now_iso(),
+             "active": True, "first": "ai" if ai_first else "human"}
+    gomoku_save(state)
+    if ai_first:
+        await gomoku_notify_ai(state, "new_ai_first")
+    return {"ok": True}
+
+
+@app.post("/app/gomoku/move")
+async def gomoku_move(request: Request):
+    check_auth(request)
+    body = await request.json()
+    try:
+        col, row = int(body.get("col")), int(body.get("row"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="col/row required")
+    state = gomoku_load()
+    if not state.get("active"):
+        raise HTTPException(status_code=400, detail="没有进行中的棋局，先开新游戏")
+    if state.get("winner"):
+        raise HTTPException(status_code=400, detail="这局已经结束啦")
+    if gomoku_current_player(state) != "human":
+        raise HTTPException(status_code=400, detail="还没轮到你落子")
+    if not (0 <= col < GOMOKU_SIZE and 0 <= row < GOMOKU_SIZE):
+        raise HTTPException(status_code=400, detail="坐标出界")
+    grid = gomoku_grid(state)
+    if grid[row][col]:
+        raise HTTPException(status_code=400, detail="这里已经有棋子了")
+    state["moves"].append({"who": "human", "col": col, "row": row, "ts": now_iso()})
+    grid[row][col] = "human"
+    if gomoku_check_win(grid, row, col):
+        state["winner"] = "human"
+        state["active"] = False
+    gomoku_save(state)
+    await gomoku_notify_ai(state, "move")
+    return {"ok": True, "winner": state.get("winner", "")}
+
+
+@app.post("/app/gomoku/undo")
+async def gomoku_undo(request: Request):
+    check_auth(request)
+    state = gomoku_load()
+    if not state.get("moves"):
+        raise HTTPException(status_code=400, detail="还没有可悔的棋")
+    # 撤回到"轮到她"为止：通常去掉 AI 的最后一子 + 她的最后一子
+    while state["moves"] and state["moves"][-1]["who"] == "ai":
+        state["moves"].pop()
+    if state["moves"]:
+        state["moves"].pop()
+    state["winner"] = ""
+    state["active"] = True
+    gomoku_save(state)
+    await gomoku_notify_ai(state, "undo")
+    return {"ok": True}
+
+
+def gomoku_try_apply_ai_reply(text: str) -> str | None:
+    """channel_out 调用：文本里有落子坐标且轮到 AI 时应用之。
+    返回 None=不是对局消息；返回空串=应用成功；返回文案=非法落子（让 AI 重下）。"""
+    match = GOMOKU_MOVE_RE.search(text or "")
+    if not match:
+        return None
+    state = gomoku_load()
+    if not state.get("active") or state.get("winner"):
+        return None
+    if gomoku_current_player(state) != "ai":
+        return "现在不是你的回合"
+    col = ord(match.group(1).upper()) - ord("A")
+    row = int(match.group(2)) - 1
+    if not (0 <= col < GOMOKU_SIZE and 0 <= row < GOMOKU_SIZE):
+        return f"坐标 {match.group(1).upper()}{match.group(2)} 出界（列 A-O，行 1-15）"
+    grid = gomoku_grid(state)
+    if grid[row][col]:
+        return f"{gomoku_coord_label(col, row)} 已经有棋子了，换个位置"
+    state["moves"].append({"who": "ai", "col": col, "row": row, "ts": now_iso()})
+    grid[row][col] = "ai"
+    # 坐标后面的话留作对局留言（去掉格式前缀）
+    comment = GOMOKU_MOVE_RE.sub("", text, count=1)
+    comment = comment.replace("♟️", "").strip(" ·:：-—\n")
+    state["comment"] = comment[:200]
+    if gomoku_check_win(grid, row, col):
+        state["winner"] = "ai"
+        state["active"] = False
+    gomoku_save(state)
+    return ""
 
 
 @app.post("/phone/health")
