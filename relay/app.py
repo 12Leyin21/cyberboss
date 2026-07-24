@@ -1159,7 +1159,7 @@ async def app_status(request: Request):
 
 
 @app.get("/app/history")
-async def app_history(request: Request, since: int = 0, limit: int = 200, session_id: str = "", tail: int = 0):
+async def app_history(request: Request, since: int = 0, limit: int = 200, session_id: str = "", tail: int = 0, before: int = 0):
     check_auth(request)
     if tail > 0 and not session_id:
         # 取最新的 N 条（App 冷启动用），升序返回
@@ -1167,6 +1167,14 @@ async def app_history(request: Request, since: int = 0, limit: int = 200, sessio
             rows = conn.execute(
                 "SELECT * FROM messages ORDER BY id DESC LIMIT ?",
                 (min(tail, 500),),
+            ).fetchall()
+        return {"messages": [app_payload(m) for m in reversed(rows_to_messages(rows))]}
+    if before > 0 and not session_id:
+        # 取 id < before 的最近 N 条（App 往上翻历史用），升序返回
+        with db() as conn:
+            rows = conn.execute(
+                "SELECT * FROM messages WHERE id < ? ORDER BY id DESC LIMIT ?",
+                (before, min(limit, 500)),
             ).fetchall()
         return {"messages": [app_payload(m) for m in reversed(rows_to_messages(rows))]}
     rows = history_for_session(session_id, since, min(limit, 500)) if session_id else history(since, min(limit, 500))
