@@ -60,6 +60,8 @@
 - **承诺/待办**：`plan(content, weight=0~1)`，**不要用 hold 创建**；后续写新事件会自动判断闭环
 - **事情解决了**：`trace(id, resolved=1)`；重提 `resolved=0`；记错了小改 `trace(id, old_str="唯一原文片段", new_str="修正")`，整段重写 `trace(id, content="全文")`
 - **删除**：`trace(id, delete=True)` 只是移入归档区可恢复，不是真删；真实记忆无法永久删除
+- **存图片（Miss）**：记忆库在另一台服务器上，**读不到你本机的文件路径**——直接传路径必报 MediaPersistenceError。正确姿势：先 `base64 -w0 文件路径`（或 `base64 -i 文件路径`）拿到编码，再传 `media=[{"data_base64":"...","filename":"photo.jpg","type":"image/jpeg"}]`。单张上限 25MB，别 base64 大视频
+- **pinned 已满 20/20**（搬家自带）：想钉新核心准则须先与灵兮商量取消一个旧的（`trace(旧id, pinned=0)`），否则会被自动降级为普通桶
 - **她问你都记得什么**：`pulse()`；上下文紧张先 `breath_advanced(catalog=True)` 看目录（每桶一行、0 LLM、最省 token）再精准拉取
 - **对话收尾有东西想消化**：`dream()`（不是义务，没得消化就不调）
 - **心境共鸣**：她情绪明显时检索带坐标 `breath_advanced(query=..., valence=0~1, arousal=0~1)`——难过时低 valence 捞的是一起扛过难事的日子
