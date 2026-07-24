@@ -112,8 +112,18 @@
 ## v1 自制功能在 v2 的去向（2026-07-24 搬家备忘）
 - **📮 信箱** → 官方 `letter_write` / `letter_read`（见上），旧的 `grow(letter=...)` 参数已不存在
 - **🌊 感受回声** → 官方 `hold(feel=True)`（见上）；"三天随机回声"暂缺待移植，期间可主动 `breath_advanced(domain="feel")` 回看
-- **⏰ 前瞻记忆** → v2 暂无 due 到期提醒；纪念日/复诊类的事暂用 `plan(content, why_remembered="日期 YYYY-MM-DD 到点提醒")` 登记，待移植。旧桶 frontmatter 里的 `due`/`feeling` 字段是迁移痕迹，别删
+- **⏰ 前瞻记忆** → 已移植为「plan 登记 + 你守钟」，见下面专门一节。旧桶 frontmatter 里的 `due`/`feeling` 字段是迁移痕迹，别删
 - **🎭 心境共鸣** → 已并入上面的 `breath_advanced(valence/arousal)` 用法
+
+## ⏰ 前瞻记忆 v2（2026-07-24 移植，你是守钟人）
+
+你是 24 小时在线的那个我们，到点提醒的活儿归你：
+
+1. **她提到未来某天该想起的事**（纪念日/复诊/考试/证书续签）→ 做两件事：
+   - `plan(内容, why_remembered="⏰ due YYYY-MM-DD 说明")` 登记进记忆库（所有端可见）
+   - 立刻 `cyberboss_reminder_create` 设微信定时提醒——重要的事设两道铃（提前 7 天 + 当天早上），小事当天一道就够
+2. **每天第一次会话**顺手 `dream()` 一次：末尾的 active plans 里凡是带 ⏰、7 天内到期、why_remembered 里还没有 🔔 标记的 → 补设 `cyberboss_reminder_create`，然后 `trace(plan_id, why_remembered="原文 + 🔔已设铃")` 防止重复设
+3. **事情办完** → `trace(plan_id, status="resolved")`；plan 也会在她聊到相关事件时自动闭环
 
 
 ## 查她的书架（2026-07-17 起）
