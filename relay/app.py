@@ -95,6 +95,11 @@ PRESENCE_RECENT_SEC = int(os.environ.get("RELAY_PRESENCE_RECENT_SEC", "1800"))
 # human messages to a local HTTP loop, which replies through /channel/out.
 BRAIN_FILE = Path(os.environ.get("RELAY_BRAIN_FILE", str(Path(__file__).parent / "brain_target")))
 
+# Which model the Claude Code brain runs. Written from the App, read by cyberboss
+# on every turn; empty file = fall back to CYBERBOSS_CLAUDE_MODEL.
+MODEL_FILE = Path(os.environ.get("RELAY_MODEL_FILE", str(Path(BRAIN_FILE).parent / "model_target")))
+MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,60}$")
+
 # --- official-app MCP connector (optional) ----------------------------------
 # The official Claude app can't host a channel adapter; a remote MCP connector
 # is its only door into this conversation. It also can't send an Authorization
@@ -382,6 +387,17 @@ def plugin_payload(msg: dict) -> dict:
         "ts": msg["ts"],
         "attachments": meta.get("attachments") or [],
     }
+
+
+def model_override() -> str:
+    """Her live model pick. Empty when she hasn't overridden the env default."""
+    try:
+        value = MODEL_FILE.read_text(encoding="utf-8").strip()
+        return value if MODEL_ID_RE.match(value) else ""
+    except FileNotFoundError:
+        return ""
+    except Exception:
+        return ""
 
 
 def brain_target() -> str:
@@ -1527,6 +1543,29 @@ async def set_brain(request: Request):
         raise HTTPException(status_code=400, detail="target must be 'desktop' or 'loop'")
     BRAIN_FILE.write_text(target, encoding="utf-8")
     return {"target": target}
+
+
+@app.get("/app/model")
+async def get_model(request: Request):
+    """Which model she picked in the App. Empty = fall back to the env default."""
+    check_auth(request)
+    return {"model": model_override()}
+
+
+@app.post("/app/model")
+async def set_model(request: Request):
+    """Pick the model the Claude Code brain runs. Empty string clears the override.
+
+    The value ends up as `--model <value>` when cyberboss spawns the CLI, so it is
+    validated to a conservative shape here rather than trusted end-to-end.
+    """
+    check_auth(request)
+    body = await request.json()
+    model = str(body.get("model") or "").strip()
+    if model and not MODEL_ID_RE.match(model):
+        raise HTTPException(status_code=400, detail="model id looks wrong")
+    MODEL_FILE.write_text(model, encoding="utf-8")
+    return {"model": model}
 
 
 @app.get("/app/loop_config")

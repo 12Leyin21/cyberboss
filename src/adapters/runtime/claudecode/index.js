@@ -9,6 +9,10 @@ const { buildOpeningTurnText, buildInstructionRefreshText } = require("../shared
 const { ClaudeCodeIpcServer } = require("./ipc-server");
 const CLAUDE_RESUME_SESSION_TIMEOUT_MS = 8000;
 
+// 中继（同容器）把她选的模型写在这里，见 relay/app.py 的 /app/model
+const MODEL_OVERRIDE_FILE = process.env.CYBERBOSS_MODEL_OVERRIDE_FILE
+  || path.join(path.dirname(process.env.RELAY_DB || "/data/relay/relay.db"), "model_target");
+
 function createClaudeCodeRuntimeAdapter(config) {
   const sessionStore = new SessionStore({ filePath: config.sessionsFile, runtimeId: "claudecode" });
   const clientsByWorkspace = new Map();
@@ -39,8 +43,20 @@ function createClaudeCodeRuntimeAdapter(config) {
     }
   });
 
+  // 她在心潮 App 里当场选的模型。中继把它写进这个文件，这里每轮现读——
+  // 换模型时 attachClientToThread 会带着同一个会话 ID --resume 重开进程，
+  // 所以上下文不丢。空文件=没覆盖，退回 CYBERBOSS_CLAUDE_MODEL。
+  function readModelOverride() {
+    try {
+      const raw = fs.readFileSync(MODEL_OVERRIDE_FILE, "utf8").trim();
+      return /^[A-Za-z0-9][A-Za-z0-9._-]{2,60}$/.test(raw) ? raw : "";
+    } catch {
+      return "";   // 文件不存在/读不了都当作"没覆盖"，绝不能因此拦住一轮对话
+    }
+  }
+
   function resolveModel(model = "") {
-    return configuredModel || normalizeText(model);
+    return readModelOverride() || configuredModel || normalizeText(model);
   }
 
   async function ensureClient(workspaceRoot, model = "") {
