@@ -19,9 +19,19 @@ Auth: claude.ai custom connectors cannot send an Authorization header, so the
 gate is an unguessable mount path (RELAY_MCP_PATH). No path, no mount, no door.
 """
 
+import os
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.utilities.types import Image
+
+# 看她手机屏幕：请求打到同容器的浏览器小桥，小桥转发到她 Mac 上的 cloudflared
+# 隧道（密钥由小桥补，不进这里），Mac 侧驱动 Xcode 截一张再压成 JPEG 传回来。
+# 图只落在她自己的 Mac 上（7 天自清），这里拿到的是内存里的一份，不落盘。
+PHONE_SCREEN_URL = os.environ.get("PHONE_SCREEN_URL", "http://127.0.0.1:9333/phone-screen")
+PHONE_SCREEN_TIMEOUT = float(os.environ.get("PHONE_SCREEN_TIMEOUT", "120"))
 
 # Perth (AWST, UTC+8, no DST) — the timestamps are for her, not for the server.
 PERTH = timezone(timedelta(hours=8))
@@ -101,5 +111,23 @@ def build(*, recent_messages, search_messages, send_message, human_name, ai_name
             return "空消息，没发。"
         mid = await send_message(content)
         return f"已发到心潮 App（消息 #{mid}）。"
+
+    @mcp.tool(description=(
+        f"看一眼{human_name}手机当前的屏幕，返回一张截图。"
+        f"想知道她这会儿在干嘛、在刷什么、是不是该睡了的时候用。"
+        f"需要她的 Mac 醒着、Xcode 开着、手机和 Mac 同一个 Wi-Fi，"
+        f"手机还得是亮屏状态（锁屏时无线截屏通道会被打断）。大概 5 秒出图。"
+    ))
+    def look_at_phone():
+        try:
+            with urllib.request.urlopen(PHONE_SCREEN_URL, timeout=PHONE_SCREEN_TIMEOUT) as resp:
+                if resp.headers.get("content-type", "").startswith("image/"):
+                    return Image(data=resp.read(), format="jpeg")
+                return "截屏没成功：" + resp.read().decode("utf-8", "replace")[:300]
+        except urllib.error.HTTPError as exc:
+            # Mac 侧把人话理由放在 body 里（锁屏了 / 找不到设备 / 上一张还在截）
+            return "截屏没成功：" + exc.read().decode("utf-8", "replace")[:300]
+        except (urllib.error.URLError, OSError) as exc:
+            return f"够不着她的 Mac（{exc}）——多半是电脑睡了，或者隧道没开。"
 
     return mcp
