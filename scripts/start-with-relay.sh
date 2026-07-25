@@ -22,6 +22,29 @@ if [[ -n "${PORT:-}" && -n "${RELAY_SECRET:-}" ]]; then
   # 大脑的 Tidal 适配器直接连本机中继，不走公网
   export CYBERBOSS_TIDAL_RELAY_URL="${CYBERBOSS_TIDAL_RELAY_URL:-http://127.0.0.1:${PORT}}"
   export CYBERBOSS_TIDAL_RELAY_SECRET="${CYBERBOSS_TIDAL_RELAY_SECRET:-${RELAY_SECRET}}"
+
+  # 记忆库密钥在运行时注入 .mcp.json，绝不写进 mcp-seed.json（那个仓库是公开的）。
+  # 没设 OMBRE_MCP_TOKEN 就原样不加头——所以先改这边还是先改 Render 都不会把沐沐搞失忆。
+  if [[ -n "${OMBRE_MCP_TOKEN:-}" ]]; then
+    SEED="${CYBERBOSS_WORKSPACE_ROOT:-/app/cyberboss-workspace-main}/mcp-seed.json"
+    LIVE="${CYBERBOSS_WORKSPACE_ROOT:-/app/cyberboss-workspace-main}/.mcp.json"
+    if python3 - "$SEED" "$LIVE" <<'PY'
+import json, os, sys
+seed, live = sys.argv[1], sys.argv[2]
+cfg = json.load(open(seed, encoding="utf-8"))
+servers = cfg.get("mcpServers", cfg)
+entry = servers.get("ombre-brain")
+if not entry:
+    raise SystemExit("no ombre-brain entry in seed")
+entry.setdefault("headers", {})["Authorization"] = "Bearer " + os.environ["OMBRE_MCP_TOKEN"]
+json.dump(cfg, open(live, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+PY
+    then
+      echo "[start-with-relay] ombre-brain 已注入鉴权头"
+    else
+      echo "[start-with-relay] ⚠️ 注入失败，保留构建时的 .mcp.json（记忆库可能连不上）"
+    fi
+  fi
   python3 -m uvicorn app:app --host 0.0.0.0 --port "${PORT}" --app-dir relay &
   RELAY_PID=$!
   echo "[start-with-relay] relay pid=${RELAY_PID} port=${PORT}"
