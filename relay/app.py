@@ -94,6 +94,12 @@ PRESENCE_RECENT_SEC = int(os.environ.get("RELAY_PRESENCE_RECENT_SEC", "1800"))
 # "desktop" keeps the original Claude Code channel path. "loop" forwards new
 # human messages to a local HTTP loop, which replies through /channel/out.
 BRAIN_FILE = Path(os.environ.get("RELAY_BRAIN_FILE", str(Path(__file__).parent / "brain_target")))
+
+# --- official-app MCP connector (optional) ----------------------------------
+# The official Claude app can't host a channel adapter; a remote MCP connector
+# is its only door into this conversation. It also can't send an Authorization
+# header, so the gate is an unguessable mount path. Unset = not mounted at all.
+MCP_PATH = os.environ.get("RELAY_MCP_PATH", "").strip("/")
 LOOP_INGEST_URL = os.environ.get("RELAY_LOOP_INGEST_URL", "http://127.0.0.1:3020/loop/ingest")
 STREAM_DRAFT_TTL = int(os.environ.get("RELAY_STREAM_DRAFT_TTL", "600"))
 
@@ -211,6 +217,26 @@ def history_for_session(session_id: str, since: int, limit: int) -> list:
                 (since, session_id, limit),
             ).fetchall()
     return rows_to_messages(rows)
+
+
+def recent_messages(limit: int) -> list:
+    """The last N messages, oldest first — the shape a transcript wants."""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM messages ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return rows_to_messages(rows)[::-1]
+
+
+def search_messages(query: str, limit: int) -> list:
+    # LIKE wildcards in her keyword must match literally, not glob
+    needle = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM messages WHERE text LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT ?",
+            ("%" + needle + "%", limit),
+        ).fetchall()
+    return rows_to_messages(rows)[::-1]
 
 
 def inbound_history(since: int, limit: int) -> list:
@@ -670,13 +696,47 @@ def check_auth(request: Request) -> None:
 # app
 # ---------------------------------------------------------------------------
 
+async def deliver_ai_message(text: str) -> int:
+    """Persist one AI message and fan it out exactly like /channel/out would."""
+    msg = save_message("out", "reply", text, {"user": "ai", "via": "official-app"})
+    await broadcast(app_subs, {"type": "typing", "active": False})
+    await broadcast(app_subs, app_payload(msg))
+    if not app_subs:
+        try:
+            await push_to_all(notification_from_message(msg))
+        except Exception:
+            pass  # a push failure must never affect persistence/fan-out
+    return msg["id"]
+
+
+oa_mcp_server = None
+if MCP_PATH:
+    import oa_mcp
+    oa_mcp_server = oa_mcp.build(
+        recent_messages=recent_messages,
+        search_messages=search_messages,
+        send_message=deliver_ai_message,
+        human_name=HUMAN_NAME,
+        ai_name=AI_NAME,
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    yield
+    if oa_mcp_server is None:
+        yield
+        return
+    # The mounted MCP sub-app carries its own lifespan that FastAPI's mount
+    # never runs, so its session manager has to be started here by hand.
+    async with oa_mcp_server.session_manager.run():
+        print(f"[relay] official-app MCP mounted at /{MCP_PATH}/mcp")
+        yield
 
 
 app = FastAPI(lifespan=lifespan)
+if oa_mcp_server is not None:
+    app.mount(f"/{MCP_PATH}", oa_mcp_server.streamable_http_app())
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOW_ORIGINS,
