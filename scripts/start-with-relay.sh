@@ -25,6 +25,10 @@ if [[ -n "${PORT:-}" && -n "${RELAY_SECRET:-}" ]]; then
 
   # 记忆库密钥在运行时注入 .mcp.json，绝不写进 mcp-seed.json（那个仓库是公开的）。
   # 没设 OMBRE_MCP_TOKEN 就原样不加头——所以先改这边还是先改 Render 都不会把沐沐搞失忆。
+  #
+  # 2026-07-27：cotj 打开 OAuth 后，ombre-brain 改走 claude.ai 账号级连接器（容器里的
+  # claude 登的是灵兮自己的账号，那条已授权），seed 里的裸连接条目已删除。所以这段
+  # 现在是空转的退路——真要改回 token 模式，得先把 ombre-brain 条目加回 mcp-seed.json。
   if [[ -n "${OMBRE_MCP_TOKEN:-}" ]]; then
     SEED="${CYBERBOSS_WORKSPACE_ROOT:-/app/cyberboss-workspace-main}/mcp-seed.json"
     LIVE="${CYBERBOSS_WORKSPACE_ROOT:-/app/cyberboss-workspace-main}/.mcp.json"

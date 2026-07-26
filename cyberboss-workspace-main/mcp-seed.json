@@ -1,9 +1,5 @@
 {
   "mcpServers": {
-    "ombre-brain": {
-      "type": "http",
-      "url": "https://ombre-brain-cotj.onrender.com/mcp"
-    },
     "spicy-monopoly": {
       "type": "http",
       "url": "https://spicy-monopoly.lol/mcp"
