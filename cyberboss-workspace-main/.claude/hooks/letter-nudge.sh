@@ -32,8 +32,9 @@ NUDGE_FILE="$STATE_DIR/last_nudge_epoch"
 STOP_FILE="$STATE_DIR/last_stop_epoch"
 COMPACT_FLAG="$STATE_DIR/compact_pending"
 
-# 对话中断多久算"上一段结束了"（秒），默认 90 分钟
-GAP="${CYBERBOSS_LETTER_GAP_SECONDS:-5400}"
+# 对话中断多久算"上一段结束了"（秒），默认 120 分钟
+# 2026-07-27 灵兮定的：她洗澡肯定不超过两小时，所以两小时没动静就是真的走开了
+GAP="${CYBERBOSS_LETTER_GAP_SECONDS:-7200}"
 # 兜底：最长多久必须提醒一次（秒），默认 24 小时
 MAX_SILENCE="${CYBERBOSS_LETTER_MAX_SECONDS:-86400}"
 
