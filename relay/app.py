@@ -100,6 +100,25 @@ BRAIN_FILE = Path(os.environ.get("RELAY_BRAIN_FILE", str(Path(__file__).parent /
 MODEL_FILE = Path(os.environ.get("RELAY_MODEL_FILE", str(Path(BRAIN_FILE).parent / "model_target")))
 MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,60}$")
 
+# --- who is in the room (2026-07-28) ---------------------------------------
+# Until now the room had exactly two seats and `direction` was enough to say who
+# spoke: 'in' = her, 'out' = the AI. There is more than one AI body now (the
+# cloud brain that serves 心潮 + 微信, and a Claude Code window on her Mac), so
+# every message carries meta.speaker. `direction` stays exactly as it was —
+# nothing that already reads it needs to change.
+SPEAKER_HUMAN = "human"   # 灵兮
+SPEAKER_MU = "mu"         # 沐沐 — the always-on cloud brain (this container)
+SPEAKER_REN = "ren"       # Ren — whichever Claude Code window on her Mac is claimed
+SPEAKER_NAMES = {SPEAKER_HUMAN: HUMAN_NAME, SPEAKER_MU: AI_NAME, SPEAKER_REN: "Ren"}
+
+# The 心潮 app renders every out-message the same way, so until its group-chat UI
+# ships (night 3) the display text gets a 〔Ren·家常〕 tag. Display layer only —
+# what lands in sqlite stays clean. Set to 0 once the app labels bubbles itself.
+SPEAKER_PREFIX = os.environ.get("RELAY_SPEAKER_PREFIX", "1") != "0"
+
+# How long a desk client may sit in a long poll before it gets an empty answer.
+DESK_POLL_MAX_WAIT = float(os.environ.get("RELAY_DESK_POLL_MAX_WAIT", "240"))
+
 # --- official-app MCP connector (optional) ----------------------------------
 # The official Claude app can't host a channel adapter; a remote MCP connector
 # is its only door into this conversation. It also can't send an Authorization
@@ -156,7 +175,47 @@ def init_db() -> None:
         conn.commit()
 
 
+def speaker_of(msg: dict) -> str:
+    """Who said it. Structure only — never inferred from the text.
+
+    Rows written before 2026-07-28 have no meta.speaker, so fall back to what
+    `direction` meant back then: 'in' was always her, 'out' was always 沐沐.
+    """
+    meta = msg.get("meta") or {}
+    who = meta.get("speaker")
+    if who in SPEAKER_NAMES:
+        return who
+    return SPEAKER_HUMAN if msg.get("direction") == "in" else SPEAKER_MU
+
+
+def speaker_label(msg: dict) -> str:
+    """Display name, with the window's own nickname when there is one."""
+    who = speaker_of(msg)
+    name = SPEAKER_NAMES.get(who, who)
+    tag = ((msg.get("meta") or {}).get("speaker_label") or "").strip()
+    return f"{name}·{tag}" if tag else name
+
+
+# Naming someone at the very start of a message picks who answers it. Only at the
+# start, and only with an explicit @ — "@keep" or "跟沐沐说" must not count, and a
+# latin nickname needs a non-word char after it (the 2026-07-25 lesson: Chinese
+# characters are word characters to Python's \b, so spell the boundary out).
+ADDRESS_PATTERNS = (
+    (SPEAKER_REN, re.compile(r"^\s*@\s*(?:小克|克克|桌面|(?:ren|ke)(?![A-Za-z0-9_]))\s*[:：,，]?\s*", re.IGNORECASE)),
+    (SPEAKER_MU, re.compile(r"^\s*@\s*(?:沐沐|盛沐|云端|mu(?![A-Za-z0-9_]))\s*[:：,，]?\s*", re.IGNORECASE)),
+)
+
+
+def addressed_to(text: str) -> str:
+    """'ren' | 'mu' | '' — who she named. The @ stays in the stored text."""
+    for who, pattern in ADDRESS_PATTERNS:
+        if pattern.match(text or ""):
+            return who
+    return ""
+
+
 def save_message(direction: str, kind: str, text: str, meta: dict) -> dict:
+    meta.setdefault("speaker", SPEAKER_HUMAN if direction == "in" else SPEAKER_MU)
     ts = meta.get("ts") or now_iso()
     with db() as conn:
         cur = conn.execute(
@@ -347,9 +406,10 @@ def notification_from_message(msg: dict) -> dict:
     body = re.sub(r"\s+", " ", body).strip()
     if len(body) > PUSH_PREVIEW_CHARS:
         body = body[:PUSH_PREVIEW_CHARS].rstrip() + "…"
+    who = speaker_label(msg)
     if not body:
-        body = f"{AI_NAME}给你发来一条消息"
-    return {"title": AI_NAME, "body": body, "url": APP_PATH, "id": msg.get("id"), "ts": msg.get("ts")}
+        body = f"{who}给你发来一条消息"
+    return {"title": who, "body": body, "url": APP_PATH, "id": msg.get("id"), "ts": msg.get("ts")}
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +419,32 @@ def notification_from_message(msg: dict) -> dict:
 plugin_subs: set[asyncio.Queue] = set()  # AI side    (GET /channel/in)
 app_subs: set[asyncio.Queue] = set()     # human side (GET /app/stream)
 stream_drafts: dict[tuple[str, str], dict] = {}
+
+# --- Ren's seat: whichever Claude Code window on her Mac has claimed it ------
+# Exactly one window holds the seat at a time — a later claim wins, and the
+# previous holder learns it was bumped the next time it polls (409). That's the
+# whole locking story: she should be able to move Ren to another window by
+# typing one line there, without having to shut anything down first.
+#
+# Deliberately in memory, not on disk: if the container restarts, nobody holds
+# the seat, which is the truth — the poller on her Mac has to come back anyway.
+desk_seat: dict = {"client_id": "", "label": "", "claimed_at": "", "last_seen": ""}
+desk_inbox: asyncio.Queue = asyncio.Queue(maxsize=200)
+
+
+def desk_online() -> bool:
+    return bool(desk_seat["client_id"])
+
+
+def desk_deliver(msg: dict) -> bool:
+    """Hand one message to the claimed window. False = nobody is holding the seat."""
+    if not desk_online():
+        return False
+    try:
+        desk_inbox.put_nowait(plugin_payload(msg))
+        return True
+    except asyncio.QueueFull:
+        return False
 
 
 async def broadcast(subs: set, payload: dict) -> None:
@@ -370,11 +456,21 @@ async def broadcast(subs: set, payload: dict) -> None:
 
 
 def app_payload(msg: dict) -> dict:
-    """Shape the PWA renders: from = 'human' | 'ai', plus kind for styling."""
+    """Shape the PWA renders: from = 'human' | 'ai', plus kind for styling.
+
+    `speaker`/`speaker_name` are additive — an app build that doesn't know about
+    them keeps rendering exactly as before. For those older builds SPEAKER_PREFIX
+    tags Ren's bubbles in the text so she can still tell the two AIs apart.
+    """
+    who = speaker_of(msg)
+    text = msg["text"]
+    if SPEAKER_PREFIX and who == SPEAKER_REN and msg["kind"] in ("reply", "voice"):
+        text = f"〔{speaker_label(msg)}〕{text}"
     return {
         "id": msg["id"], "ts": msg["ts"],
         "from": "human" if msg["direction"] == "in" else "ai",
-        "kind": msg["kind"], "text": msg["text"], "meta": msg["meta"],
+        "speaker": who, "speaker_name": speaker_label(msg),
+        "kind": msg["kind"], "text": text, "meta": msg["meta"],
     }
 
 
@@ -725,6 +821,15 @@ async def deliver_ai_message(text: str) -> int:
     return msg["id"]
 
 
+async def deliver_notice(text: str) -> int:
+    """A word from the plumbing, not from either AI. Rendered like a reply, but
+    kind='system' keeps it out of the transcripts the AIs read as conversation."""
+    msg = save_message("out", "system", text, {"user": "system", "speaker": SPEAKER_MU})
+    await broadcast(app_subs, {"type": "typing", "active": False})
+    await broadcast(app_subs, app_payload(msg))
+    return msg["id"]
+
+
 oa_mcp_server = None
 if MCP_PATH:
     import oa_mcp
@@ -847,10 +952,18 @@ async def app_send(request: Request):
     meta = {"user": "human", "attachments": attachments}
     if api_session:
         meta["api_session"] = api_session
+    target = addressed_to(text)
+    if target:
+        meta["to"] = target
     msg = save_message("in", "user", text, meta)
-    # Route to exactly one AI body. "desktop" keeps the Claude Code channel;
-    # "loop" calls the optional server-side API loop.
-    if brain_target() == "loop":
+    # Route to exactly one AI body. Naming Ren sends it to the claimed window on
+    # her Mac; anything else keeps the old path — "desktop" is the Claude Code
+    # channel, "loop" the server-side API loop.
+    if target == SPEAKER_REN:
+        if not desk_deliver(msg):
+            asyncio.create_task(deliver_notice(
+                "Ren 现在没挂在任何窗口上——去电脑上你想让他上线的那个窗口说一句「接群聊」就行。"))
+    elif brain_target() == "loop":
         asyncio.create_task(forward_to_loop(msg))
     else:
         await broadcast(plugin_subs, plugin_payload(msg))
@@ -859,6 +972,112 @@ async def app_send(request: Request):
     # the AI starts processing — push a typing state to the PWA
     await broadcast(app_subs, {"type": "typing", "active": True})
     return {"id": msg["id"]}
+
+
+# ---- Ren's seat (2026-07-28) ----------------------------------------------
+#
+# A Claude Code window on her Mac claims the seat, long-polls for anything she
+# addressed to Ren, and answers through /desk/say. Long polling rather than SSE
+# because the client here is a shell command the window runs — it wants one
+# request that blocks and then returns, not a stream to keep alive.
+
+@app.post("/desk/claim")
+async def desk_claim(request: Request):
+    """Take the seat. A later claim always wins; the old holder finds out on poll."""
+    global desk_inbox
+    check_auth(request)
+    body = await request.json()
+    label = str(body.get("label") or "").strip()[:24]
+    superseded = desk_seat["client_id"]
+    desk_seat.update({
+        "client_id": secrets.token_hex(8),
+        "label": label,
+        "claimed_at": now_iso(),
+        "last_seen": now_iso(),
+    })
+    desk_inbox = asyncio.Queue(maxsize=200)  # a new holder starts with an empty inbox
+    return {
+        "client_id": desk_seat["client_id"],
+        "label": label,
+        "superseded": bool(superseded),
+    }
+
+
+@app.post("/desk/release")
+async def desk_release(request: Request):
+    check_auth(request)
+    body = await request.json()
+    if body.get("client_id") == desk_seat["client_id"]:
+        desk_seat.update({"client_id": "", "label": "", "claimed_at": "", "last_seen": ""})
+        return {"released": True}
+    return {"released": False, "reason": "not the current holder"}
+
+
+@app.get("/desk/poll")
+async def desk_poll(request: Request, client_id: str = "", wait: float = 60):
+    """Block until she says something to Ren, or until `wait` seconds pass.
+
+    409 means this window lost the seat to a newer claim — the caller should stop
+    polling rather than retry, otherwise two windows would answer her at once.
+    """
+    check_auth(request)
+    if not client_id or client_id != desk_seat["client_id"]:
+        raise HTTPException(status_code=409, detail="seat taken by another window")
+    desk_seat["last_seen"] = now_iso()
+    inbox = desk_inbox
+    timeout = max(1.0, min(float(wait or 60), DESK_POLL_MAX_WAIT))
+    messages = []
+    try:
+        messages.append(await asyncio.wait_for(inbox.get(), timeout=timeout))
+    except asyncio.TimeoutError:
+        pass
+    while True:  # drain whatever else piled up so one poll returns the whole burst
+        try:
+            messages.append(inbox.get_nowait())
+        except asyncio.QueueEmpty:
+            break
+    # Re-check: the seat may have changed hands while this request was parked, and
+    # the bumped holder must not walk away with her messages.
+    if client_id != desk_seat["client_id"]:
+        raise HTTPException(status_code=409, detail="seat taken by another window")
+    desk_seat["last_seen"] = now_iso()
+    return {"messages": messages}
+
+
+@app.post("/desk/say")
+async def desk_say(request: Request):
+    """Ren speaks. Same persistence and fan-out as any other reply."""
+    check_auth(request)
+    body = await request.json()
+    if body.get("client_id") != desk_seat["client_id"]:
+        raise HTTPException(status_code=409, detail="seat taken by another window")
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="empty text")
+    msg = save_message("out", "reply", text, {
+        "user": "ai", "speaker": SPEAKER_REN, "speaker_label": desk_seat["label"], "via": "desk",
+    })
+    desk_seat["last_seen"] = now_iso()
+    await broadcast(app_subs, {"type": "typing", "active": False})
+    await broadcast(app_subs, app_payload(msg))
+    if not app_subs:
+        try:
+            await push_to_all(notification_from_message(msg))
+        except Exception:
+            pass  # a push failure must never affect persistence/fan-out
+    return {"id": msg["id"]}
+
+
+@app.get("/desk/status")
+async def desk_status(request: Request):
+    check_auth(request)
+    return {
+        "online": desk_online(),
+        "label": desk_seat["label"],
+        "claimed_at": desk_seat["claimed_at"],
+        "last_seen": desk_seat["last_seen"],
+        "pending": desk_inbox.qsize(),
+    }
 
 
 @app.post("/app/upload")

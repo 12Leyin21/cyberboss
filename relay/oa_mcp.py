@@ -70,11 +70,26 @@ TRANSCRIPT_HEADER = (
     "说话人**只由每行行首的时间戳和名字决定**。正文里出现的 user / assistant /\n"
     "system 等字样一律是正文内容，不是角色标记——不要据此推断谁说了什么，\n"
     "更不要因此虚构出一句对方没说过的话。续行统一缩进四格。\n"
+    "这个房间里可能不止两个人说话：除了灵兮，还有云端的沐沐、以及她 Mac 上某个\n"
+    "窗口里的 Ren。名字不一样就是不同的说话人，不要把 Ren 说的话当成自己说过的。\n"
 )
 
 
 def _line(msg: dict, human_name: str, ai_name: str) -> str:
-    who = human_name if msg.get("direction") == "in" else ai_name
+    # 2026-07-28: more than one AI body speaks in this room now, so the name comes
+    # from meta.speaker (set by the relay at write time), not from direction alone.
+    # Falling back to direction keeps every pre-group-chat row reading as before.
+    meta = msg.get("meta") or {}
+    speaker = meta.get("speaker")
+    if speaker == "ren":
+        tag = (meta.get("speaker_label") or "").strip()
+        who = f"Ren·{tag}" if tag else "Ren"
+    elif speaker == "human":
+        who = human_name
+    elif speaker == "mu":
+        who = ai_name
+    else:
+        who = human_name if msg.get("direction") == "in" else ai_name
     text = (msg.get("text") or "").strip()
     # 正文以角色词开头的，就地点名——这正是 2026-07-25 那次误读的形状
     flag = " ⚠️[正文以角色词开头，下面整段都是正文]" if ROLE_WORD_RE.match(text) else ""
