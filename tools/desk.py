@@ -34,6 +34,10 @@ SEAT_FILE = Path.home() / ".claude" / "hearttide-desk.json"
 EXIT_BUMPED = 3
 
 
+class Unreachable(Exception):
+    """中继一时够不着——网络抖动、容器重启、部署中。可重试，不是致命错误。"""
+
+
 def secret() -> str:
     value = os.environ.get("HEARTTIDE_SECRET", "").strip()
     if value:
@@ -69,7 +73,11 @@ def call(path: str, body=None, timeout: float = 30):
             sys.exit(EXIT_BUMPED)
         sys.exit(f"HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}")
     except urllib.error.URLError as exc:
-        sys.exit(f"够不着中继（{exc}）")
+        raise Unreachable(f"够不着中继（{exc}）") from exc
+    except (TimeoutError, OSError) as exc:
+        # 长轮询挂 4 分钟，中间网络抖一下就是读取超时——这不是 URLError 的子类，
+        # 早先漏接了，结果一次抖动就让整个监听崩掉。当成"这一轮没消息"重来即可。
+        raise Unreachable(f"连接中断（{type(exc).__name__}: {exc}）") from exc
 
 
 def load_seat() -> dict:
@@ -101,7 +109,13 @@ def cmd_poll(argv):
     wait = 120.0
     if "--wait" in argv:
         wait = float(argv[argv.index("--wait") + 1])
-    res = call("/desk/poll?client_id=%s&wait=%s" % (need_seat(), wait), timeout=wait + 30)
+    try:
+        res = call("/desk/poll?client_id=%s&wait=%s" % (need_seat(), wait), timeout=wait + 30)
+    except Unreachable as exc:
+        # 一轮长轮询挂几分钟，中间抖一下很正常。轮询本来就是要一遍遍来的，
+        # 所以这里算"这一轮没消息"而不是报错——报错会让上层监听整个停掉。
+        print(f"（连接抖了一下：{exc}，这一轮当没消息）")
+        return
     messages = res.get("messages") or []
     if not messages:
         print("（这一轮她没说话）")
@@ -145,4 +159,7 @@ COMMANDS = {
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         sys.exit(__doc__)
-    COMMANDS[sys.argv[1]](sys.argv[2:])
+    try:
+        COMMANDS[sys.argv[1]](sys.argv[2:])
+    except Unreachable as exc:
+        sys.exit(str(exc))
