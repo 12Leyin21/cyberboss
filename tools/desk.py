@@ -88,18 +88,26 @@ def load_seat() -> dict:
 
 
 def need_seat() -> str:
-    cid = (load_seat().get("client_id") or "").strip()
+    # 环境变量优先于文件：座位文件是全局共用的，另一个窗口一 claim 就把它覆盖了，
+    # 这边再去读文件就会读到别人的凭据、跟着一起收消息，抢占锁就白设了。
+    # 监听循环在 claim 时把 id 拿到手上（claim --id），之后一直用自己那份。
+    cid = os.environ.get("HEARTTIDE_CLIENT_ID", "").strip() or (load_seat().get("client_id") or "").strip()
     if not cid:
         sys.exit("这个窗口还没认领座位——先跑 desk.py claim <窗口名>")
     return cid
 
 
 def cmd_claim(argv):
+    only_id = "--id" in argv
+    argv = [a for a in argv if a != "--id"]
     label = (argv[0] if argv else "").strip()
     res = call("/desk/claim", {"label": label})
     SEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
     SEAT_FILE.write_text(json.dumps({"client_id": res["client_id"], "label": label},
                                     ensure_ascii=False), encoding="utf-8")
+    if only_id:
+        print(res["client_id"])   # 给监听循环用：拿到手上，别再回头读那个共用文件
+        return
     who = f"Ren·{label}" if label else "Ren"
     bumped = "（把之前那个窗口顶下线了）" if res.get("superseded") else ""
     print(f"座位已认领：{who}{bumped}")
