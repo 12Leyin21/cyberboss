@@ -129,7 +129,12 @@ function createTidalClient(env, config) {
         if (!Number.isFinite(id) || id <= lastId) {
           continue;
         }
-        if (message?.from === "human" && message?.kind !== "call") {
+        // meta.to 是她点名给谁的（2026-07-28 起）。点名给别人的消息，实时那条路
+        // 本来就不会推给沐沐——补课这条路也得跳过，否则一次重连就会把她跟 Ren
+        // 说的话补进沐沐的会话里，让他隔半天又回一遍。
+        const addressee = message?.meta?.to;
+        const forMe = !addressee || addressee === "mu";
+        if (message?.from === "human" && message?.kind !== "call" && forMe) {
           onMessage(toRawMessage({
             id,
             text: message.text,
