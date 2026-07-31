@@ -384,8 +384,8 @@ const PROJECT_TOOLS = [
   },
   {
     name: "cyberboss_sticker_send",
-    description: "Send a saved sticker back to the current WeChat chat by sticker id.",
-    shortHint: "Send a saved sticker by id.",
+    description: "Send a saved sticker back to the current chat by sticker id. Works in BOTH WeChat and the 心潮/Tidal app channel — it goes through the merged sender, so the sticker lands wherever the current conversation is happening.",
+    shortHint: "Send a saved sticker by id (WeChat or 心潮).",
     topics: ["sticker"],
     inputSchema: {
       type: "object",
