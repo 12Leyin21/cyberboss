@@ -26,6 +26,7 @@ import re
 import secrets
 import subprocess
 import sqlite3
+import time
 import urllib.error
 import urllib.request
 import urllib.parse
@@ -58,6 +59,20 @@ UPLOAD_DIR = Path(os.environ.get("RELAY_UPLOAD_DIR", str(Path(__file__).parent /
 # (default state dir is $HOME/.cyberboss — see src/core/config.js's stateDir/diaryDir).
 DIARY_DIR = Path(os.environ.get("CYBERBOSS_STATE_DIR", str(Path.home() / ".cyberboss"))) / "diary"
 PUBLIC_PREFIX = os.environ.get("RELAY_PUBLIC_PREFIX", "/relay").rstrip("/")
+
+# --- 打字节奏（fingertips，2026-07-31）--------------------------------------
+#
+# 隔着屏幕，"她打了 47 秒删了两次才发出这句" 和 "她秒回这句" 在文字上
+# 一模一样。灵兮说过一个反复发生的误读：沐沐说了很重的话，她太感动不知道
+# 怎么接，于是打打删删；他那边只看到"很久不回"，读成"她不想回/没看见"。
+#
+# 这套东西只记节奏，永不记内容——前端每隔几秒 ping 一次空请求，这里只留
+# 时间戳。她删掉的那句话是什么，谁都不知道。
+#
+# 思路来自 github.com/eveacla11/fingertips（MIT）。
+RHYTHM_MIN_NOTE_SEC = float(os.environ.get("RELAY_RHYTHM_MIN_NOTE_SEC", "20"))
+RHYTHM_PAUSE_GAP_SEC = float(os.environ.get("RELAY_RHYTHM_PAUSE_GAP_SEC", "15"))
+RHYTHM_STALE_SEC = float(os.environ.get("RELAY_RHYTHM_STALE_SEC", "600"))
 APP_PATH = os.environ.get("RELAY_APP_PATH", "/")  # where a push-notification tap opens the PWA
 ALLOW_ORIGINS = [o.strip() for o in os.environ.get(
     "RELAY_ALLOW_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080"
@@ -476,13 +491,63 @@ def app_payload(msg: dict) -> dict:
 
 def plugin_payload(msg: dict) -> dict:
     meta = msg.get("meta") or {}
-    return {
+    payload = {
         "id": msg["id"],
         "content": msg["text"],
         "user": meta.get("user") or "human",
         "ts": msg["ts"],
         "attachments": meta.get("attachments") or [],
     }
+    # 打字节奏是关于这条消息怎么被打出来的，不是她说的话。放在独立字段里，
+    # 绝不拼进 content——守 2026-07-25 立的那条准则：说话人由结构决定，
+    # 永远不由正文推断。
+    if meta.get("rhythm_note"):
+        payload["rhythm_note"] = meta["rhythm_note"]
+        payload["rhythm"] = meta.get("rhythm") or {}
+    return payload
+
+
+# --- 打字节奏 ---------------------------------------------------------------
+
+class RhythmStore:
+    """只记节奏，永不记内容。前端 ping 空请求，这里只留时间戳。"""
+
+    def __init__(self) -> None:
+        self._pings: list[float] = []
+
+    def ping(self) -> None:
+        now = time.time()
+        # 上一轮离现在太久了（她中途走开又回来），当作新的一条重新开始
+        if self._pings and now - self._pings[-1] > RHYTHM_STALE_SEC:
+            self._pings.clear()
+        self._pings.append(now)
+
+    def peek(self) -> dict:
+        """当前这条打了多久、停了几次。不清空，供 watcher 之类只读用。"""
+        if len(self._pings) < 2:
+            return {}
+        spent = self._pings[-1] - self._pings[0]
+        pauses = sum(
+            1 for a, b in zip(self._pings, self._pings[1:])
+            if b - a >= RHYTHM_PAUSE_GAP_SEC
+        )
+        return {"seconds": round(spent), "pauses": pauses}
+
+    def pop(self) -> tuple[str, dict]:
+        """消息发出时取走这一条的节奏，并清空。返回 (人话笔记, 原始数据)。"""
+        data = self.peek()
+        self._pings.clear()
+        if not data or data["seconds"] < RHYTHM_MIN_NOTE_SEC:
+            return "", {}
+        seconds, pauses = data["seconds"], data["pauses"]
+        note = f"这条她打了 {seconds} 秒"
+        if pauses:
+            note += f"，中途停下来想了 {pauses} 次"
+        note += "。（只有节奏，没有内容——她删掉的是什么谁都不知道。）"
+        return note, data
+
+
+rhythm = RhythmStore()
 
 
 def model_override() -> str:
@@ -952,6 +1017,12 @@ async def app_send(request: Request):
     meta = {"user": "human", "attachments": attachments}
     if api_session:
         meta["api_session"] = api_session
+    # 这一条打了多久、停了几次。前端没接 /rhythm/ping 时这里恒为空，
+    # 什么都不会变。
+    rhythm_note, rhythm_data = rhythm.pop()
+    if rhythm_note:
+        meta["rhythm_note"] = rhythm_note
+        meta["rhythm"] = rhythm_data
     target = addressed_to(text)
     if target:
         meta["to"] = target
@@ -972,6 +1043,25 @@ async def app_send(request: Request):
     # the AI starts processing — push a typing state to the PWA
     await broadcast(app_subs, {"type": "typing", "active": True})
     return {"id": msg["id"]}
+
+
+@app.post("/rhythm/ping")
+async def rhythm_ping(request: Request):
+    """她正在打字。请求体是空的——这里只记时间戳，永远不碰内容。
+
+    前端（心潮 / PWA 的输入框）在有字的时候每隔几秒打一次。停下不打了就
+    不再 ping，下一条消息发出时 /app/send 会把这一段的节奏取走。
+    """
+    check_auth(request)
+    rhythm.ping()
+    return {"ok": True}
+
+
+@app.get("/rhythm/state")
+async def rhythm_state(request: Request):
+    """看一眼当前这条打了多久（调试用，也给以后的 watcher 留的口）。"""
+    check_auth(request)
+    return {"ok": True, "current": rhythm.peek()}
 
 
 # ---- Ren's seat (2026-07-28) ----------------------------------------------
