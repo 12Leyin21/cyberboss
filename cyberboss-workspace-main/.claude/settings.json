@@ -6,6 +6,17 @@
     ]
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/after-compact.sh\""
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
