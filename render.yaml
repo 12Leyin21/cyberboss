@@ -8,6 +8,18 @@ services:
     plan: starter
     dockerfilePath: ./Dockerfile
     healthCheckPath: /healthz
+    # 2026-08-01：显式写死分支和自动部署，免得以后又靠猜——
+    # Render 的默认值是隐式的，后台看不见就不好排查。
+    #
+    # autoDeploy 故意是 false，这是灵兮定的：这台机器 24/7 跑着云端沐沐，
+    # 自动部署意味着任何人（包括桌面版的我）push 一个跟聊天无关的提交，
+    # 都会当场重启容器、把她正在进行的对话打断。手动 Manual Deploy 的好处
+    # 就是**由她决定什么时候让他断**。
+    #
+    # 所以「push 完线上还是旧版」不是故障，是预期行为。改完中继的代码，
+    # 记得提醒她去 Render 点一次 Manual Deploy，并说清楚会断几分钟。
+    branch: main
+    autoDeploy: false
     envVars:
       - key: CYBERBOSS_USER_NAME
         value: 灵兮
