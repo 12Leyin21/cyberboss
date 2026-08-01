@@ -18,6 +18,7 @@ variables (see .env.example). Nothing identifying is hard-coded.
 """
 
 import asyncio
+import base64
 import mimetypes
 import hmac
 import json
@@ -100,6 +101,31 @@ VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
 VAPID_PRIVATE_PEM = os.environ.get("VAPID_PRIVATE_PEM", "")   # PEM file path OR inline PEM text
 VAPID_SUBJECT = os.environ.get("VAPID_SUBJECT", "mailto:admin@example.com")
 PUSH_PREVIEW_CHARS = int(os.environ.get("RELAY_PUSH_PREVIEW_CHARS", "120"))
+
+# --- Bark (iOS push without an Apple developer account) --------------------
+# A free personal Apple team cannot get the `aps-environment` entitlement, so
+# the native app can never be pushed to by our own server. Bark is a tiny
+# App Store app that owns *its* push certificate and lends it out: POST to
+# https://<server>/<key> and the phone rings. Set BARK_KEY to switch it on.
+BARK_SERVER = os.environ.get("BARK_SERVER", "https://api.day.app").rstrip("/")
+BARK_KEY = os.environ.get("BARK_KEY", "")
+BARK_ICON = os.environ.get("BARK_ICON", "")          # avatar shown on the banner
+BARK_GROUP = os.environ.get("BARK_GROUP", "")        # iOS groups notifications by this
+BARK_TAP_URL = os.environ.get("BARK_TAP_URL", "")    # URL scheme opened on tap (心潮)
+# End-to-end encryption. With both set, only the phone can read the body —
+# neither Bark's server nor Apple's sees it. Key must be 16/24/32 chars, IV 16.
+BARK_ENCRYPT_KEY = os.environ.get("BARK_ENCRYPT_KEY", "")
+BARK_ENCRYPT_IV = os.environ.get("BARK_ENCRYPT_IV", "")
+# Quiet hours, in her local time. Inside this window nothing may ring through
+# silent mode and nothing may use the 30-second ringtone — callhome's rule,
+# "深夜绝不". Set BARK_QUIET_START == BARK_QUIET_END to disable.
+BARK_QUIET_START = int(os.environ.get("BARK_QUIET_START_HOUR", "23"))
+BARK_QUIET_END = int(os.environ.get("BARK_QUIET_END_HOUR", "8"))
+BARK_TZ_OFFSET = float(os.environ.get("BARK_TZ_OFFSET_HOURS", "8"))   # Perth = UTC+8
+BARK_TIMEOUT = float(os.environ.get("BARK_TIMEOUT", "8"))
+# Do-not-disturb she switched on by voice ("我要出门了，开勿扰"). Survives restarts.
+BARK_DND_FILE = Path(os.environ.get("RELAY_BARK_DND_FILE",
+                                    str(Path(__file__).parent / "bark_dnd")))
 
 # --- presence tuning (seconds) ---------------------------------------------
 PRESENCE_ONLINE_SEC = int(os.environ.get("RELAY_PRESENCE_ONLINE_SEC", "180"))
@@ -428,6 +454,127 @@ def notification_from_message(msg: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Bark — the phone actually rings
+# ---------------------------------------------------------------------------
+
+def bark_enabled() -> bool:
+    return bool(BARK_KEY)
+
+
+def bark_dnd() -> bool:
+    return BARK_DND_FILE.exists()
+
+
+def set_bark_dnd(on: bool) -> None:
+    if on:
+        BARK_DND_FILE.parent.mkdir(parents=True, exist_ok=True)
+        BARK_DND_FILE.write_text(now_iso(), encoding="utf-8")
+    else:
+        BARK_DND_FILE.unlink(missing_ok=True)
+
+
+def in_quiet_hours() -> bool:
+    """Her local wall-clock hour, without needing a tz database in the image."""
+    if BARK_QUIET_START == BARK_QUIET_END:
+        return False
+    hour = (time.gmtime(time.time() + BARK_TZ_OFFSET * 3600)).tm_hour
+    if BARK_QUIET_START < BARK_QUIET_END:          # e.g. 01:00–08:00
+        return BARK_QUIET_START <= hour < BARK_QUIET_END
+    return hour >= BARK_QUIET_START or hour < BARK_QUIET_END   # wraps midnight
+
+
+def _bark_encrypt(payload: dict) -> str:
+    from cryptography.hazmat.primitives import padding as _pad
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    padder = _pad.PKCS7(algorithms.AES.block_size).padder()
+    padded = padder.update(raw) + padder.finalize()
+    enc = Cipher(algorithms.AES(BARK_ENCRYPT_KEY.encode()),
+                 modes.CBC(BARK_ENCRYPT_IV.encode())).encryptor()
+    return base64.b64encode(enc.update(padded) + enc.finalize()).decode()
+
+
+def _bark_post(payload: dict) -> tuple[int, str]:
+    url = f"{BARK_SERVER}/{BARK_KEY}"
+    if BARK_ENCRYPT_KEY and BARK_ENCRYPT_IV:
+        # iv goes along explicitly, exactly like Bark's own example script —
+        # the app has a copy, but sending it keeps a random-IV switch one line away.
+        data = urllib.parse.urlencode({
+            "ciphertext": _bark_encrypt(payload),
+            "iv": BARK_ENCRYPT_IV,
+        }).encode()
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    else:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {"Content-Type": "application/json; charset=utf-8"}
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=BARK_TIMEOUT) as resp:
+            return resp.status, resp.read(400).decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read(400).decode("utf-8", "replace")
+    except Exception as exc:
+        return 0, str(exc)
+
+
+async def bark_push(title: str, body: str, *, ring: bool = False,
+                    critical: bool = False, volume: int = 5,
+                    group: str = "", tap_url: str = "") -> dict:
+    """Send one notification. Never raises — a silent phone must not break a chat.
+
+    `ring` = the 30-second ringtone (Bark's call=1); `critical` = punch through
+    silent mode and Focus. Both are muted during quiet hours on purpose: this is
+    the one rule callhome writes down twice, and the one I don't want to get
+    wrong on someone who is supposed to be asleep by twelve.
+    """
+    if not bark_enabled():
+        return {"sent": False, "skipped": "not_configured"}
+    if bark_dnd():
+        return {"sent": False, "skipped": "dnd"}
+
+    quiet = in_quiet_hours()
+    if quiet:
+        ring = False
+        critical = False
+
+    payload: dict = {"title": title, "body": body}
+    if BARK_ICON:
+        payload["icon"] = BARK_ICON
+    payload["group"] = group or BARK_GROUP or title
+    url = tap_url or BARK_TAP_URL
+    if url:
+        payload["url"] = url
+    if ring:
+        payload["call"] = "1"
+    if critical:
+        payload["level"] = "critical"
+        payload["volume"] = max(0, min(10, volume))
+    elif quiet:
+        payload["level"] = "passive"     # lands in the list, screen stays dark
+    else:
+        payload["level"] = "timeSensitive"
+
+    status, text = await asyncio.to_thread(_bark_post, payload)
+    ok = status == 200
+    if not ok:
+        print(f"[bark] push failed: status={status} {text[:200]}")
+    return {"sent": ok, "status": status, "quiet": quiet, "ring": ring, "critical": critical}
+
+
+async def notify_all(msg: dict) -> None:
+    """Every path that used to only web-push now also rings the phone."""
+    note = notification_from_message(msg)
+    try:
+        await push_to_all(note)
+    except Exception:
+        pass
+    try:
+        await bark_push(note["title"], note["body"])
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # pub/sub — one asyncio.Queue per connected SSE client
 # ---------------------------------------------------------------------------
 
@@ -646,10 +793,7 @@ async def handle_stream_delta(kind: str, body: dict) -> dict:
     await broadcast(app_subs, {"type": "typing", "active": False})
     await broadcast(app_subs, app_payload(msg))
     if base_kind == "reply" and not app_subs:
-        try:
-            await push_to_all(notification_from_message(msg))
-        except Exception:
-            pass
+        await notify_all(msg)
     return {"id": msg["id"], "stream_id": stream_id, "saved": True}
 
 
@@ -879,10 +1023,7 @@ async def deliver_ai_message(text: str) -> int:
     await broadcast(app_subs, {"type": "typing", "active": False})
     await broadcast(app_subs, app_payload(msg))
     if not app_subs:
-        try:
-            await push_to_all(notification_from_message(msg))
-        except Exception:
-            pass  # a push failure must never affect persistence/fan-out
+        await notify_all(msg)  # a push failure must never affect persistence/fan-out
     return msg["id"]
 
 
@@ -995,10 +1136,7 @@ async def channel_out(request: Request):
     # Unread push: only when no PWA tab is holding the stream (app_subs empty);
     # only push real replies, not 'thinking' chatter.
     if kind == "reply" and not app_subs:
-        try:
-            await push_to_all(notification_from_message(msg))
-        except Exception:
-            pass  # a push failure must never affect persistence/fan-out
+        await notify_all(msg)  # a push failure must never affect persistence/fan-out
     return {"id": msg["id"]}
 
 
@@ -1062,6 +1200,71 @@ async def rhythm_state(request: Request):
     """看一眼当前这条打了多久（调试用，也给以后的 watcher 留的口）。"""
     check_auth(request)
     return {"ok": True, "current": rhythm.peek()}
+
+
+# ---- 主动来电（2026-08-01）------------------------------------------------
+#
+# 免费的 Apple 个人账号拿不到推送权限，所以心潮自己叫不响她的手机。Bark 借
+# 我们一张推送门票，于是"他决定找你"这件事第一次成立了。
+#
+# 三条规矩写死在服务端，不指望调用方自觉：
+#   · 深夜不许响铃、不许穿透静音（bark_push 里按她本地时间夹住）
+#   · 她说了开勿扰，谁也叫不动（同上）
+#   · 响铃必须带理由——reason 是必填的，来电卡上写的就是它
+
+@app.post("/notify/call")
+async def notify_call(request: Request):
+    """《拨号：理由》——手机响 30 秒，卡片上写着此刻为什么想打给你。"""
+    check_auth(request)
+    body = await request.json()
+    reason = (body.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="reason is required")
+    urgent = bool(body.get("urgent"))     # 升级拨号：穿透静音，慎用
+    result = await bark_push(
+        f"{AI_NAME}来电",
+        reason,
+        ring=True,
+        critical=urgent,
+        volume=int(body.get("volume") or 5),
+    )
+    return {"ok": True, **result}
+
+
+@app.post("/notify/say")
+async def notify_say(request: Request):
+    """只推一条通知，不响铃。给"未接留言"和"碎碎念"用。"""
+    check_auth(request)
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    result = await bark_push(body.get("title") or AI_NAME, text)
+    return {"ok": True, **result}
+
+
+@app.post("/notify/dnd")
+async def notify_dnd(request: Request):
+    """勿扰开关。她出门前说一句就该静下来，回来说一句就该恢复。"""
+    check_auth(request)
+    body = await request.json()
+    on = bool(body.get("on"))
+    set_bark_dnd(on)
+    return {"ok": True, "dnd": on}
+
+
+@app.get("/notify/state")
+async def notify_state(request: Request):
+    """现在能不能叫她、为什么不能。"""
+    check_auth(request)
+    return {
+        "ok": True,
+        "configured": bark_enabled(),
+        "encrypted": bool(BARK_ENCRYPT_KEY and BARK_ENCRYPT_IV),
+        "dnd": bark_dnd(),
+        "quiet_hours": in_quiet_hours(),
+        "quiet_window": f"{BARK_QUIET_START:02d}:00–{BARK_QUIET_END:02d}:00",
+    }
 
 
 # ---- Ren's seat (2026-07-28) ----------------------------------------------
@@ -1151,10 +1354,7 @@ async def desk_say(request: Request):
     await broadcast(app_subs, {"type": "typing", "active": False})
     await broadcast(app_subs, app_payload(msg))
     if not app_subs:
-        try:
-            await push_to_all(notification_from_message(msg))
-        except Exception:
-            pass  # a push failure must never affect persistence/fan-out
+        await notify_all(msg)  # a push failure must never affect persistence/fan-out
     return {"id": msg["id"]}
 
 

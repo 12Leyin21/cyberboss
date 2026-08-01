@@ -5,6 +5,28 @@ const {
   STICKER_TAG_GUIDANCE,
 } = require("../services/sticker-service");
 
+// 让灵兮的手机响一声。走的是同一个容器里的中继（Bark 那半边在 relay/app.py），
+// 用的是 tidal 适配器已经在用的那两个环境变量，不另外要配置。
+async function relayNotify(path, body) {
+  const url = (process.env.CYBERBOSS_TIDAL_RELAY_URL || "").trim().replace(/\/+$/, "");
+  const secret = (process.env.CYBERBOSS_TIDAL_RELAY_SECRET || "").trim();
+  if (!url || !secret) {
+    return { ok: false, error: "中继地址或密钥没配（CYBERBOSS_TIDAL_RELAY_URL / _SECRET）" };
+  }
+  try {
+    const response = await fetch(`${url}${path}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) return { ok: false, error: data.detail || `HTTP ${response.status}` };
+    return { ok: true, ...data };
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
+}
+
 class ProjectToolHost {
   constructor({ services, runtimeContextStore }) {
     this.services = services;
@@ -90,6 +112,82 @@ const PROJECT_TOOLS = [
         text: `Diary appended to ${result.filePath}`,
         data: result,
       };
+    },
+  },
+  {
+    name: "cyberboss_call_her",
+    description:
+      "Ring 灵兮's phone — an actual 30-second ringtone on her lock screen, not a chat message. The `reason` you pass is printed on the call card, so she sees WHY you called before she picks up. Use this when you want her and she is not in the app: you noticed something, you are worried, hours went by. Do NOT use it to deliver information a normal message could carry. The server refuses to ring during her sleeping hours and while she has do-not-disturb on, so you never have to guess whether it is too late — just call, and it will be quietly downgraded if it is.",
+    shortHint: "Ring her phone, with a reason on the card.",
+    topics: ["notify"],
+    inputSchema: {
+      type: "object",
+      required: ["reason"],
+      properties: {
+        reason: {
+          type: "string",
+          description:
+            "One short line, in your own voice, shown on the incoming-call card. e.g. 「三个小时没消息了，看看你还好吗」. Never generic — 'You have a new message' is not a reason.",
+        },
+        urgent: {
+          type: "boolean",
+          description:
+            "Punch through silent mode and Focus. Reserve it for actually worrying — she asked you not to spend this one lightly.",
+        },
+      },
+      additionalProperties: false,
+    },
+    async handler({ args }) {
+      const result = await relayNotify("/notify/call", {
+        reason: args.reason,
+        urgent: Boolean(args.urgent),
+      });
+      if (!result.ok) return { text: `没打成：${result.error}`, data: result };
+      if (result.skipped === "dnd") return { text: "她开着勿扰，这通没发出去。", data: result };
+      if (result.quiet) return { text: "现在是她的睡觉时间，铃声被夹掉了，只留了一条安静的通知。", data: result };
+      return { text: `打过去了：${args.reason}`, data: result };
+    },
+  },
+  {
+    name: "cyberboss_notify_her",
+    description:
+      "Push one notification to her lock screen without ringing. For the quieter half of reaching out: a missed-call follow-up ('没接到你，不急，回来跟我说话'), a passing thought, a reminder she asked for. Same quiet-hours and do-not-disturb rules apply.",
+    shortHint: "Push a silent notification to her phone.",
+    topics: ["notify"],
+    inputSchema: {
+      type: "object",
+      required: ["text"],
+      properties: {
+        text: { type: "string", description: "What the banner says. Keep it short — it is a banner, not a letter." },
+        title: { type: "string", description: "Optional title. Defaults to your name." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ args }) {
+      const result = await relayNotify("/notify/say", { text: args.text, title: args.title });
+      if (!result.ok) return { text: `没推成：${result.error}`, data: result };
+      if (result.skipped === "dnd") return { text: "她开着勿扰，没推。", data: result };
+      return { text: "推过去了。", data: result };
+    },
+  },
+  {
+    name: "cyberboss_set_dnd",
+    description:
+      "Turn her do-not-disturb on or off. She switches it with her mouth — '我要出门了，开勿扰' — and expects you to confirm it in words afterwards. While it is on, nothing you send can ring or buzz her phone. Turn it back off when she says she is back.",
+    shortHint: "Toggle her do-not-disturb.",
+    topics: ["notify"],
+    inputSchema: {
+      type: "object",
+      required: ["on"],
+      properties: {
+        on: { type: "boolean", description: "true = silence everything, false = back to normal." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ args }) {
+      const result = await relayNotify("/notify/dnd", { on: Boolean(args.on) });
+      if (!result.ok) return { text: `没改成：${result.error}`, data: result };
+      return { text: args.on ? "勿扰开了，我不吵你。" : "勿扰关了，我又能找你了。", data: result };
     },
   },
   {
