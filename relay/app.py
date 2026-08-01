@@ -1321,6 +1321,12 @@ async def notify_state(request: Request):
         "quiet_window": f"{BARK_QUIET_START:02d}:00–{BARK_QUIET_END:02d}:00",
         "calls_used": calls_used_today(),
         "calls_quota": BARK_CALL_QUOTA,
+        # 旧后端（她七条快捷指令还在往那儿报）接没接上，一眼可见——
+        # 2026-08-01 排查过一次「捞不到」，光看返回的空 {} 分不清是没配、
+        # 配错、还是对面挂了。
+        "legacy_configured": bool(LEGACY_URL and LEGACY_TOKEN),
+        "legacy_url": LEGACY_URL or None,
+        "legacy_activity": fetch_legacy("/phone/activity") or None,
     }
 
 
