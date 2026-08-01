@@ -1450,6 +1450,17 @@ def fetch_legacy(path: str) -> dict:
     return hit[1] if hit else {}
 
 
+WEATHER_FILE = Path(os.environ.get("RELAY_WEATHER_FILE",
+                                   str(Path(DB_PATH).parent / "phone_weather.json")))
+
+
+def read_phone_weather() -> dict:
+    try:
+        return json.loads(WEATHER_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
 def read_phone_activity() -> dict:
     """最后一次「她打开了某个 App」。本地优先，没有再去旧后端捞，取时间新的那份。"""
     local = _last_phone_activity
@@ -2264,15 +2275,20 @@ async def phone_weather(request: Request):
     global _last_weather
     body = await request.json()
     _last_weather = {**body, "ts": body.get("ts") or now_iso()}
+    # 落盘。天气一天只报三次（10:30 / 22:30 / 日落），只存内存的话每次部署都会
+    # 把它抹掉，然后要等到下一个报点才有数——2026-08-01 就这么空了两次。
+    try:
+        WEATHER_FILE.write_text(json.dumps(_last_weather, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
     return {"ok": True}
 
 
 @app.get("/phone/weather")
 async def get_phone_weather(request: Request):
-    """Return the most recent weather snapshot. Her 三条天气自动化 still report
-    to the legacy backend, so fall back to it rather than answering {}."""
+    """Return the most recent weather snapshot: memory, then disk, then legacy."""
     check_auth(request)
-    return _last_weather or fetch_legacy("/phone/weather") or {}
+    return _last_weather or read_phone_weather() or fetch_legacy("/phone/weather") or {}
 
 
 @app.post("/app/ping")
