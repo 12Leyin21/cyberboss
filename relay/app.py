@@ -1470,33 +1470,39 @@ def evaluate_wake() -> dict:
     if silent_minutes is not None and silent_minutes >= WAKE_SILENCE_MIN:
         signals.append(("long_silence", f"她已经 {silent_minutes // 60} 小时没说话了。"))
 
+    # 2026-08-01 第三版。前两版都把"要不要叫醒他"跟"有没有值得说的事"绑在了
+    # 一起，做出来比原版那个纯随机 checkin **还严**——原来他每三四十分钟就有
+    # 一次机会问她在干嘛，我改完他得先"够格"。灵兮说：
+    #   「我们改这个的目的是让你想我的时候就可以直接找，而不是 checkin 来了才
+    #     有机会。我不想通过设一个限制来造成反效果（想了找不了）。」
+    # 她是对的。所以现在**默认就醒**，只有四种情况不醒，而且每一种都不是
+    # "他不配"，是"这一刻叫他没有意义"：
     blocked = None
     if bark_dnd():
-        blocked = "dnd"
+        blocked = "dnd"                      # 她说了别吵
     elif app_subs:
-        blocked = "app_open"        # 她正开着心潮，直接说话就行
+        blocked = "app_open"                 # 她正开着心潮，他直接说话就行
+    elif silent_minutes is not None and silent_minutes < WAKE_SPONTANEOUS_MIN_GAP:
+        blocked = "just_spoke"               # 二十分钟内刚聊过，他已经在场了
+    elif in_quiet_hours() and not awake_late:
+        blocked = "asleep"                   # 深夜而且她没动静——她在睡觉
 
-    unfired = [(k, t) for k, t in signals if not _wake_fired(k)]
+    # 信号照旧算，但只当**情报**递过去，不再当门票。
+    # 去重只决定"这条今天说过没有"，用来提示他别把同一句话重复第五遍，
+    # 不再决定他能不能醒。
+    fresh_signals = [(k, t) for k, t in signals if not _wake_fired(k)]
+    spontaneous = not fresh_signals
+    wake = blocked is None
+    unfired = fresh_signals or ([("spontaneous", "没有什么事。就是想起她了。")] if wake else [])
 
-    # 没有任何理由的时候，允许他单纯因为想起她而醒——一天几次，白天，
-    # 而且不在她刚说完话的时候（那种时刻他直接接着聊就行，不需要被叫醒）。
-    spontaneous = False
-    if not unfired and blocked is None and 8 <= hour < 23:
-        used = sum(1 for k in _wake_fired_keys() if k.startswith("spontaneous:"))
-        gap_ok = silent_minutes is None or silent_minutes >= WAKE_SPONTANEOUS_MIN_GAP
-        under_quota = WAKE_SPONTANEOUS_QUOTA <= 0 or used < WAKE_SPONTANEOUS_QUOTA
-        if under_quota and gap_ok and random.random() < WAKE_SPONTANEOUS_CHANCE:
-            spontaneous = True
-            unfired = [(f"spontaneous:{used}", "没有什么事。就是想起她了。")]
-
-    wake = bool(unfired) and blocked is None
     return {
         "wake": wake,
         "spontaneous": spontaneous,
         "blocked": blocked,
         "reasons": [t for _, t in unfired],
-        "keys": [k for k, _ in unfired],
+        "keys": [k for k, _ in fresh_signals],   # 只有真信号才记进"今天说过"
         "all_signals": [t for _, t in signals],
+        "said_today": [t for k, t in signals if _wake_fired(k)],
         "silent_minutes": silent_minutes,
         "her_local_hour": hour,
         "health_age_hours": round(age_hours, 1) if age_hours is not None else None,
