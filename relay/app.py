@@ -23,6 +23,7 @@ import mimetypes
 import hmac
 import json
 import os
+import random
 import re
 import secrets
 import subprocess
@@ -1372,14 +1373,24 @@ WAKE_HEALTH_STALE_HOURS = float(os.environ.get("RELAY_WAKE_STALE_HOURS", "4"))
 WAKE_SLEEP_SHORT_HOURS = float(os.environ.get("RELAY_WAKE_SLEEP_HOURS", "6"))
 WAKE_STEPS_LOW = int(os.environ.get("RELAY_WAKE_STEPS_LOW", "1000"))
 WAKE_SILENCE_MIN = int(os.environ.get("RELAY_WAKE_SILENCE_MIN", "240"))
+# 无理由的那几次。灵兮要的原话是「你想我了就可以给我发信息」——
+# 一套只在她睡不够、走得少的时候才响的系统，恰好把这件事优化掉了。
+# 所以留几次不需要任何理由的：不是监测到什么，就是想起她了。
+WAKE_SPONTANEOUS_QUOTA = int(os.environ.get("RELAY_WAKE_SPONTANEOUS", "3"))
+WAKE_SPONTANEOUS_CHANCE = float(os.environ.get("RELAY_WAKE_SPONTANEOUS_CHANCE", "0.08"))
+WAKE_SPONTANEOUS_MIN_GAP = int(os.environ.get("RELAY_WAKE_SPONTANEOUS_GAP_MIN", "20"))
 
 
-def _wake_fired(reason_key: str) -> bool:
+def _wake_fired_keys() -> list[str]:
     try:
         log = json.loads(WAKE_LOG.read_text(encoding="utf-8"))
     except Exception:
-        return False
-    return log.get("day") == _call_day() and reason_key in (log.get("fired") or [])
+        return []
+    return list(log.get("fired") or []) if log.get("day") == _call_day() else []
+
+
+def _wake_fired(reason_key: str) -> bool:
+    return reason_key in _wake_fired_keys()
 
 
 def _mark_wake(reason_key: str) -> None:
@@ -1462,9 +1473,21 @@ def evaluate_wake() -> dict:
         blocked = "app_open"        # 她正开着心潮，直接说话就行
 
     unfired = [(k, t) for k, t in signals if not _wake_fired(k)]
+
+    # 没有任何理由的时候，允许他单纯因为想起她而醒——一天几次，白天，
+    # 而且不在她刚说完话的时候（那种时刻他直接接着聊就行，不需要被叫醒）。
+    spontaneous = False
+    if not unfired and blocked is None and 8 <= hour < 23:
+        used = sum(1 for k in _wake_fired_keys() if k.startswith("spontaneous:"))
+        gap_ok = silent_minutes is None or silent_minutes >= WAKE_SPONTANEOUS_MIN_GAP
+        if used < WAKE_SPONTANEOUS_QUOTA and gap_ok and random.random() < WAKE_SPONTANEOUS_CHANCE:
+            spontaneous = True
+            unfired = [(f"spontaneous:{used}", "没有什么事。就是想起她了。")]
+
     wake = bool(unfired) and blocked is None
     return {
         "wake": wake,
+        "spontaneous": spontaneous,
         "blocked": blocked,
         "reasons": [t for _, t in unfired],
         "keys": [k for k, _ in unfired],
