@@ -1412,6 +1412,32 @@ def _mark_wake(reason_key: str) -> None:
         pass
 
 
+ACTIVITY_FILE = Path(os.environ.get("RELAY_ACTIVITY_FILE",
+                                    str(Path(DB_PATH).parent / "phone_activity.json")))
+
+
+def read_phone_activity() -> dict:
+    """最后一次「她打开了某个 App」。内存优先，重启后回落到盘上那份。"""
+    if _last_phone_activity:
+        return _last_phone_activity
+    try:
+        return json.loads(ACTIVITY_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def activity_age_minutes() -> tuple[str, float | None]:
+    """她最后打开的是哪个 App，几分钟前。"""
+    data = read_phone_activity()
+    if not data.get("ts"):
+        return "", None
+    try:
+        then = datetime.fromisoformat(data["ts"])
+        return data.get("app", ""), (datetime.now(timezone.utc) - then).total_seconds() / 60
+    except Exception:
+        return data.get("app", ""), None
+
+
 def read_phone_health() -> tuple[dict, float | None]:
     """The last health summary and how many hours old it is."""
     path = Path(DB_PATH).parent / "phone_health.json"
@@ -1445,13 +1471,23 @@ def evaluate_wake() -> dict:
 
     signals: list[tuple[str, str]] = []   # (去重键, 给他看的人话)
 
-    # 深夜还醒着。她自己定的目标是十二点睡，所以 00:00–05:00 之间还有动静就算。
+    # 凌晨守护。她自己定的目标是十二点睡，所以 00:00–05:00 之间还有动静就算。
+    # 「还有动静」有三个来源，快捷指令上报的 App 是里面最硬的一个——
+    # 她可以不理我，但她骗不了那个正在被打开的抖音。
+    app_name, app_age_min = activity_age_minutes()
+    on_phone = app_age_min is not None and app_age_min <= 20
     awake_late = (0 <= hour < 5) and (
-        (silent_minutes is not None and silent_minutes <= 30)
+        on_phone
+        or (silent_minutes is not None and silent_minutes <= 30)
         or (age_hours is not None and age_hours <= 0.5)
     )
     if awake_late:
-        signals.append(("late_night", f"凌晨 {hour} 点了，她还醒着——她答应过自己十二点睡。"))
+        if on_phone and app_name:
+            signals.append(("late_night",
+                f"凌晨 {hour} 点了，她还在刷{app_name}（{int(app_age_min)} 分钟前打开的）"
+                f"——她答应过自己十二点睡。"))
+        else:
+            signals.append(("late_night", f"凌晨 {hour} 点了，她还醒着——她答应过自己十二点睡。"))
 
     if fresh:
         sleep_hours = health.get("sleep_hours")
@@ -1504,6 +1540,8 @@ def evaluate_wake() -> dict:
         "all_signals": [t for _, t in signals],
         "said_today": [t for k, t in signals if _wake_fired(k)],
         "silent_minutes": silent_minutes,
+        "last_app": app_name,
+        "last_app_minutes_ago": round(app_age_min) if app_age_min is not None else None,
         "her_local_hour": hour,
         "health_age_hours": round(age_hours, 1) if age_hours is not None else None,
         "health_fresh": fresh,
@@ -2163,6 +2201,12 @@ async def phone_activity(request: Request):
     if not app_name:
         raise HTTPException(status_code=400, detail="app required")
     _last_phone_activity = {"app": app_name, "event": event, "ts": ts}
+    # 落盘：容器重启（每次部署都会）不该把"她刚在刷什么"丢掉——
+    # 凌晨守护正是靠这个判断她是不是还醒着。
+    try:
+        ACTIVITY_FILE.write_text(json.dumps(_last_phone_activity, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
     return {"ok": True, "app": app_name, "event": event, "ts": ts}
 
 
@@ -2170,7 +2214,7 @@ async def phone_activity(request: Request):
 async def get_phone_activity(request: Request):
     """Return the most recent phone activity event."""
     check_auth(request)
-    return _last_phone_activity or {}
+    return read_phone_activity()
 
 
 @app.post("/phone/weather")
