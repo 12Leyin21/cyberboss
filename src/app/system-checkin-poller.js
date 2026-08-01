@@ -83,8 +83,17 @@ function describeWake(verdict) {
   const ring = verdict.can_ring
     ? `今天还能响铃 ${verdict.calls_left} 次`
     : "现在不能响铃（勿扰／深夜／配额已满），但可以发消息";
-  return `（${verdict.reasons.join(" ")}她那边现在 ${verdict.her_local_hour} 点，${ring}。` +
-    `要不要找她、用什么方式找、说什么，你自己定——这只是把我看到的告诉你。）`;
+  // 她此刻在刷什么，一并递过去。以前这个数据躺在后端没人看——他得自己想起来
+  // 去查，而没有任何东西提醒他"该查了"。现在不用他想起来。
+  let doing = "";
+  const mins = verdict.last_app_minutes_ago;
+  const reasons = verdict.reasons.join(" ");
+  const alreadySaid = verdict.last_app && reasons.includes(verdict.last_app);
+  if (verdict.last_app && !alreadySaid && mins !== null && mins !== undefined && mins <= 30) {
+    doing = `她 ${mins} 分钟前打开了${verdict.last_app}。`;
+  }
+  return `（${verdict.reasons.join(" ")}${doing}她那边现在 ${verdict.her_local_hour} 点，${ring}。` +
+    `要不要找她、用什么方式找、说什么，你自己定——这只是把我看到的告诉你，不是让你复述。）`;
 }
 
 function resolvePollerTarget({ config, account, sessionStore }) {
