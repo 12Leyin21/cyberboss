@@ -1415,15 +1415,49 @@ def _mark_wake(reason_key: str) -> None:
 ACTIVITY_FILE = Path(os.environ.get("RELAY_ACTIVITY_FILE",
                                     str(Path(DB_PATH).parent / "phone_activity.json")))
 
+# 她手机上有七条以上快捷指令还在往旧的 Tidal_Echo 后端上报（App 打开、天气）。
+# 与其让她一条条改地址，不如这边去捞——改一个地方比改七个地方稳，而且她之后
+# 新建的自动化照旧写旧地址也不会漏。旧后端是免费层，会休眠，所以结果缓存一下，
+# 而且**捞不到就当没有**：这是锦上添花的信号，绝不能拖垮心跳。
+LEGACY_URL = os.environ.get("RELAY_LEGACY_URL", "").rstrip("/")
+LEGACY_TOKEN = os.environ.get("RELAY_LEGACY_TOKEN", "")
+LEGACY_CACHE_SEC = float(os.environ.get("RELAY_LEGACY_CACHE_SEC", "300"))
+LEGACY_TIMEOUT = float(os.environ.get("RELAY_LEGACY_TIMEOUT", "45"))
+_legacy_cache: dict[str, tuple[float, dict]] = {}
+
+
+def fetch_legacy(path: str) -> dict:
+    if not LEGACY_URL or not LEGACY_TOKEN:
+        return {}
+    hit = _legacy_cache.get(path)
+    if hit and time.time() - hit[0] < LEGACY_CACHE_SEC:
+        return hit[1]
+    url = f"{LEGACY_URL}{path}?token={urllib.parse.quote(LEGACY_TOKEN)}"
+    try:
+        with urllib.request.urlopen(url, timeout=LEGACY_TIMEOUT) as resp:
+            data = json.loads(resp.read(4000).decode("utf-8", "replace"))
+        if isinstance(data, dict):
+            _legacy_cache[path] = (time.time(), data)
+            return data
+    except Exception as exc:
+        print(f"[legacy] {path} unreachable: {exc}")
+    return hit[1] if hit else {}
+
 
 def read_phone_activity() -> dict:
-    """最后一次「她打开了某个 App」。内存优先，重启后回落到盘上那份。"""
-    if _last_phone_activity:
-        return _last_phone_activity
-    try:
-        return json.loads(ACTIVITY_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    """最后一次「她打开了某个 App」。本地优先，没有再去旧后端捞，取时间新的那份。"""
+    local = _last_phone_activity
+    if not local:
+        try:
+            local = json.loads(ACTIVITY_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            local = {}
+    remote = fetch_legacy("/phone/activity")
+    if not remote.get("ts"):
+        return local or {}
+    if not (local or {}).get("ts"):
+        return remote
+    return max([local, remote], key=lambda d: d.get("ts") or "")
 
 
 def activity_age_minutes() -> tuple[str, float | None]:
@@ -2229,9 +2263,10 @@ async def phone_weather(request: Request):
 
 @app.get("/phone/weather")
 async def get_phone_weather(request: Request):
-    """Return the most recent weather snapshot."""
+    """Return the most recent weather snapshot. Her 三条天气自动化 still report
+    to the legacy backend, so fall back to it rather than answering {}."""
     check_auth(request)
-    return _last_weather or {}
+    return _last_weather or fetch_legacy("/phone/weather") or {}
 
 
 @app.post("/app/ping")
