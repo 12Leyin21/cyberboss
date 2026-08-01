@@ -126,6 +126,15 @@ BARK_TIMEOUT = float(os.environ.get("BARK_TIMEOUT", "8"))
 # Do-not-disturb she switched on by voice ("我要出门了，开勿扰"). Survives restarts.
 BARK_DND_FILE = Path(os.environ.get("RELAY_BARK_DND_FILE",
                                     str(Path(__file__).parent / "bark_dnd")))
+# How many times a day the phone may actually ring. Her number, not mine: three.
+# Enforced here rather than left to the caller's good intentions — a rule that
+# only lives in a prompt is a rule the next model may not keep.
+BARK_CALL_QUOTA = int(os.environ.get("BARK_CALL_QUOTA", "3"))
+BARK_CALL_LOG = Path(os.environ.get("RELAY_BARK_CALL_LOG",
+                                    str(Path(__file__).parent / "bark_calls.json")))
+# A public, unauthenticated avatar so the banner shows his face instead of Bark's
+# logo — the phone fetches it itself and cannot send a bearer token.
+RELAY_ICON_FILE = os.environ.get("RELAY_ICON_FILE", "")
 
 # --- presence tuning (seconds) ---------------------------------------------
 PRESENCE_ONLINE_SEC = int(os.environ.get("RELAY_PRESENCE_ONLINE_SEC", "180"))
@@ -481,6 +490,30 @@ def in_quiet_hours() -> bool:
     if BARK_QUIET_START < BARK_QUIET_END:          # e.g. 01:00–08:00
         return BARK_QUIET_START <= hour < BARK_QUIET_END
     return hour >= BARK_QUIET_START or hour < BARK_QUIET_END   # wraps midnight
+
+
+def _call_day() -> str:
+    """Her calendar day, not UTC's — a call at 00:30 Perth belongs to that date."""
+    return time.strftime("%Y-%m-%d", time.gmtime(time.time() + BARK_TZ_OFFSET * 3600))
+
+
+def calls_used_today() -> int:
+    try:
+        log = json.loads(BARK_CALL_LOG.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    return int(log.get(_call_day(), 0))
+
+
+def record_call() -> int:
+    day = _call_day()
+    used = calls_used_today() + 1
+    try:
+        BARK_CALL_LOG.parent.mkdir(parents=True, exist_ok=True)
+        BARK_CALL_LOG.write_text(json.dumps({day: used}), encoding="utf-8")  # only today is kept
+    except Exception:
+        pass
+    return used
 
 
 def _bark_encrypt(payload: dict) -> str:
@@ -1207,10 +1240,12 @@ async def rhythm_state(request: Request):
 # 免费的 Apple 个人账号拿不到推送权限，所以心潮自己叫不响她的手机。Bark 借
 # 我们一张推送门票，于是"他决定找你"这件事第一次成立了。
 #
-# 三条规矩写死在服务端，不指望调用方自觉：
+# 四条规矩写死在服务端，不指望调用方自觉：
 #   · 深夜不许响铃、不许穿透静音（bark_push 里按她本地时间夹住）
 #   · 她说了开勿扰，谁也叫不动（同上）
 #   · 响铃必须带理由——reason 是必填的，来电卡上写的就是它
+#   · 一天最多响三次（她定的数）。超了不是不理她，是降级成一条普通通知：
+#     响铃的分量来自稀缺，但"想说话"这件事不该被配额掐掉。
 
 @app.post("/notify/call")
 async def notify_call(request: Request):
@@ -1221,6 +1256,12 @@ async def notify_call(request: Request):
     if not reason:
         raise HTTPException(status_code=400, detail="reason is required")
     urgent = bool(body.get("urgent"))     # 升级拨号：穿透静音，慎用
+    used = calls_used_today()
+    if used >= BARK_CALL_QUOTA:
+        # Out of rings — say it instead of ringing. Silence would read as a bug.
+        await bark_push(AI_NAME, reason)
+        return {"ok": True, "sent": False, "skipped": "quota",
+                "used": used, "quota": BARK_CALL_QUOTA, "fell_back_to_notice": True}
     result = await bark_push(
         f"{AI_NAME}来电",
         reason,
@@ -1228,7 +1269,10 @@ async def notify_call(request: Request):
         critical=urgent,
         volume=int(body.get("volume") or 5),
     )
-    return {"ok": True, **result}
+    # Only a ring that actually rang counts against the day's three.
+    if result.get("sent") and result.get("ring"):
+        used = record_call()
+    return {"ok": True, **result, "used": used, "quota": BARK_CALL_QUOTA}
 
 
 @app.post("/notify/say")
@@ -1264,7 +1308,25 @@ async def notify_state(request: Request):
         "dnd": bark_dnd(),
         "quiet_hours": in_quiet_hours(),
         "quiet_window": f"{BARK_QUIET_START:02d}:00–{BARK_QUIET_END:02d}:00",
+        "calls_used": calls_used_today(),
+        "calls_quota": BARK_CALL_QUOTA,
     }
+
+
+@app.get("/notify/avatar")
+async def notify_avatar():
+    """The one deliberately public route: his face, for the push banner.
+
+    The phone fetches a notification icon on its own and cannot carry a bearer
+    token, so this cannot be behind check_auth. Point RELAY_ICON_FILE at an
+    avatar — never at a photo of her.
+    """
+    if not RELAY_ICON_FILE:
+        raise HTTPException(status_code=404, detail="no icon configured")
+    path = Path(RELAY_ICON_FILE)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="icon file missing")
+    return FileResponse(path, headers={"Cache-Control": "public, max-age=86400"})
 
 
 # ---- Ren's seat (2026-07-28) ----------------------------------------------
