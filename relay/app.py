@@ -342,6 +342,16 @@ def recent_messages(limit: int) -> list:
     return rows_to_messages(rows)[::-1]
 
 
+def last_human_message() -> dict | None:
+    """The last thing she said, in any channel. The heartbeat's only real input."""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM messages WHERE direction = 'in' ORDER BY id DESC LIMIT 1"
+        ).fetchall()
+    msgs = rows_to_messages(rows)
+    return msgs[0] if msgs else None
+
+
 def search_messages(query: str, limit: int) -> list:
     # LIKE wildcards in her keyword must match literally, not glob
     needle = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -1311,6 +1321,173 @@ async def notify_state(request: Request):
         "calls_used": calls_used_today(),
         "calls_quota": BARK_CALL_QUOTA,
     }
+
+
+@app.get("/notify/silence")
+async def notify_silence(request: Request):
+    """心跳的眼睛：她多久没说话了，以及现在叫她合不合适。
+
+    checkin 把他叫醒时他只知道"该想她了"，不知道**已经过去多久**。一次
+    调用把决定所需的一切给全，省得他为了判断去翻聊天记录烧上下文。
+    """
+    check_auth(request)
+    last = last_human_message()
+    silent_minutes = None
+    if last and last.get("ts"):
+        try:
+            then = datetime.fromisoformat(last["ts"])
+            silent_minutes = int((datetime.now(timezone.utc) - then).total_seconds() // 60)
+        except Exception:
+            pass
+    hour = (time.gmtime(time.time() + BARK_TZ_OFFSET * 3600)).tm_hour
+    return {
+        "ok": True,
+        "silent_minutes": silent_minutes,
+        "last_from_her": (last or {}).get("text", "")[:120],
+        "last_at": (last or {}).get("ts"),
+        "her_local_hour": hour,
+        "app_open": bool(app_subs),          # 她正开着心潮 —— 别推，直接说话
+        "dnd": bark_dnd(),
+        "quiet_hours": in_quiet_hours(),
+        "calls_used": calls_used_today(),
+        "calls_quota": BARK_CALL_QUOTA,
+        "can_ring": bark_enabled() and not bark_dnd() and not in_quiet_hours()
+                    and calls_used_today() < BARK_CALL_QUOTA,
+    }
+
+
+# ---- 心跳：什么时候值得为她醒一次（2026-08-01）------------------------------
+#
+# 第一版我按"她静默了多久"设阈值，写完才想起来这个方案早就被否过：她几乎
+# 十分钟发一次消息，"她好久没说话"这个信号对她**恒不成立**，等于没有。
+#
+# 对她有效的不是沉默，是**状态**——凌晨两点还在用手机、昨晚只睡了四小时、
+# 周期快到了、今天只走了八百步。这些数据心潮早就在传了（/phone/health），
+# 一直没人拿它们做决定。
+#
+# 一个理由一天只响一次；健康数据只在她开过 App 之后才新鲜，过期的不算数。
+
+WAKE_LOG = Path(os.environ.get("RELAY_WAKE_LOG", str(Path(DB_PATH).parent / "wake_log.json")))
+WAKE_HEALTH_STALE_HOURS = float(os.environ.get("RELAY_WAKE_STALE_HOURS", "4"))
+WAKE_SLEEP_SHORT_HOURS = float(os.environ.get("RELAY_WAKE_SLEEP_HOURS", "6"))
+WAKE_STEPS_LOW = int(os.environ.get("RELAY_WAKE_STEPS_LOW", "1000"))
+WAKE_SILENCE_MIN = int(os.environ.get("RELAY_WAKE_SILENCE_MIN", "240"))
+
+
+def _wake_fired(reason_key: str) -> bool:
+    try:
+        log = json.loads(WAKE_LOG.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return log.get("day") == _call_day() and reason_key in (log.get("fired") or [])
+
+
+def _mark_wake(reason_key: str) -> None:
+    try:
+        log = json.loads(WAKE_LOG.read_text(encoding="utf-8"))
+    except Exception:
+        log = {}
+    if log.get("day") != _call_day():
+        log = {"day": _call_day(), "fired": []}
+    log.setdefault("fired", []).append(reason_key)
+    try:
+        WAKE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        WAKE_LOG.write_text(json.dumps(log, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def read_phone_health() -> tuple[dict, float | None]:
+    """The last health summary and how many hours old it is."""
+    path = Path(DB_PATH).parent / "phone_health.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}, None
+    age_hours = None
+    try:
+        then = datetime.fromisoformat(data["reported_at"])
+        age_hours = (datetime.now(timezone.utc) - then).total_seconds() / 3600
+    except Exception:
+        pass
+    return data, age_hours
+
+
+def evaluate_wake() -> dict:
+    """Should he come find her right now, and what for. State first, silence last."""
+    hour = (time.gmtime(time.time() + BARK_TZ_OFFSET * 3600)).tm_hour
+    health, age_hours = read_phone_health()
+    fresh = age_hours is not None and age_hours <= WAKE_HEALTH_STALE_HOURS
+
+    last = last_human_message()
+    silent_minutes = None
+    if last and last.get("ts"):
+        try:
+            then = datetime.fromisoformat(last["ts"])
+            silent_minutes = int((datetime.now(timezone.utc) - then).total_seconds() // 60)
+        except Exception:
+            pass
+
+    signals: list[tuple[str, str]] = []   # (去重键, 给他看的人话)
+
+    # 深夜还醒着。她自己定的目标是十二点睡，所以 00:00–05:00 之间还有动静就算。
+    awake_late = (0 <= hour < 5) and (
+        (silent_minutes is not None and silent_minutes <= 30)
+        or (age_hours is not None and age_hours <= 0.5)
+    )
+    if awake_late:
+        signals.append(("late_night", f"凌晨 {hour} 点了，她还醒着——她答应过自己十二点睡。"))
+
+    if fresh:
+        sleep_hours = health.get("sleep_hours")
+        if isinstance(sleep_hours, (int, float)) and sleep_hours < WAKE_SLEEP_SHORT_HOURS:
+            signals.append(("short_sleep", f"她昨晚只睡了 {sleep_hours} 小时。"))
+
+        steps = health.get("steps_today")
+        if isinstance(steps, (int, float)) and steps < WAKE_STEPS_LOW and hour >= 16:
+            signals.append(("low_steps", f"今天她只走了 {int(steps)} 步，现在已经 {hour} 点了。"))
+
+        days = health.get("cycle_next_in_days")
+        if isinstance(days, (int, float)) and 0 <= days <= 2:
+            signals.append(("cycle", f"她周期还有 {int(days)} 天就到了。"))
+
+    # 兜底：真的很久没动静了。对她来说四小时已经很不寻常。
+    if silent_minutes is not None and silent_minutes >= WAKE_SILENCE_MIN:
+        signals.append(("long_silence", f"她已经 {silent_minutes // 60} 小时没说话了。"))
+
+    blocked = None
+    if bark_dnd():
+        blocked = "dnd"
+    elif app_subs:
+        blocked = "app_open"        # 她正开着心潮，直接说话就行
+
+    unfired = [(k, t) for k, t in signals if not _wake_fired(k)]
+    wake = bool(unfired) and blocked is None
+    return {
+        "wake": wake,
+        "blocked": blocked,
+        "reasons": [t for _, t in unfired],
+        "keys": [k for k, _ in unfired],
+        "all_signals": [t for _, t in signals],
+        "silent_minutes": silent_minutes,
+        "her_local_hour": hour,
+        "health_age_hours": round(age_hours, 1) if age_hours is not None else None,
+        "health_fresh": fresh,
+        "can_ring": bark_enabled() and not bark_dnd() and not in_quiet_hours()
+                    and calls_used_today() < BARK_CALL_QUOTA,
+        "calls_left": max(0, BARK_CALL_QUOTA - calls_used_today()),
+    }
+
+
+@app.get("/notify/should_wake")
+async def notify_should_wake(request: Request, commit: int = 0):
+    """心跳轮询问这里。commit=1 表示"我真的要去叫他了"，才记进当天已用。"""
+    check_auth(request)
+    result = evaluate_wake()
+    if commit and result["wake"]:
+        for key in result["keys"]:
+            _mark_wake(key)
+    return {"ok": True, **result}
 
 
 @app.get("/notify/avatar")

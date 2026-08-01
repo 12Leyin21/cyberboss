@@ -8,6 +8,30 @@ const { SystemMessageQueueStore } = require("../core/system-message-queue-store"
 
 const INTERNAL_CHECKIN_TRIGGER_TEMPLATE = "%USER% comes to mind again.";
 
+// 心跳（2026-08-01）。原版 checkin 是纯随机醒：她刚说完话也可能醒，醒了还得
+// 自己翻记录才知道过了多久——每醒一次烧一次额度，大部分白烧。
+//
+// 判断放在中继的 /notify/should_wake 里，因为健康数据在它手上。轮询这边只做
+// 一次 HTTP GET，不值得就接着睡，**根本不惊动他**。
+//
+// ⚠️ 判据是她的**状态**，不是她的沉默：她几乎十分钟发一次消息，"她好久没说话"
+// 这个信号对她恒不成立。有效的是"凌晨两点还醒着""昨晚只睡四小时""今天只走了
+// 八百步""周期快到了"。
+async function readShouldWake({ commit }) {
+  const url = (process.env.CYBERBOSS_TIDAL_RELAY_URL || "").trim().replace(/\/+$/, "");
+  const secret = (process.env.CYBERBOSS_TIDAL_RELAY_SECRET || "").trim();
+  if (!url || !secret) return null;   // 没接中继就退回原来的纯随机行为
+  try {
+    const response = await fetch(`${url}/notify/should_wake?commit=${commit ? 1 : 0}`, {
+      headers: { Authorization: `Bearer ${secret}` },
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
 async function runSystemCheckinPoller(config) {
   const account = resolveSelectedAccount(config);
   const queue = new SystemMessageQueueStore({ filePath: config.systemMessageQueueFile });
@@ -32,16 +56,35 @@ async function runSystemCheckinPoller(config) {
       continue;
     }
 
+    // commit=1：这一次真的要叫他，中继那边把这些理由记成"今天已用过"
+    const verdict = await readShouldWake({ commit: true });
+    if (verdict && !verdict.wake) {
+      console.log(`[cyberboss] checkin skipped: blocked=${verdict.blocked || "no-signal"} ` +
+        `silent=${verdict.silent_minutes}m hour=${verdict.her_local_hour} ` +
+        `health_fresh=${verdict.health_fresh}`);
+      continue;
+    }
+
     const queued = queue.enqueue({
       id: crypto.randomUUID(),
       accountId: account.accountId,
       senderId: target.senderId,
       workspaceRoot: target.workspaceRoot,
-      text: buildCheckinTrigger(config),
+      text: buildCheckinTrigger(config) + describeWake(verdict),
       createdAt: new Date().toISOString(),
     });
     console.log(`[cyberboss] checkin queued id=${queued.id}`);
   }
+}
+
+/** 把判断依据一起递过去，省他一次工具调用。 */
+function describeWake(verdict) {
+  if (!verdict || !verdict.reasons?.length) return "";
+  const ring = verdict.can_ring
+    ? `今天还能响铃 ${verdict.calls_left} 次`
+    : "现在不能响铃（勿扰／深夜／配额已满），但可以发消息";
+  return `（${verdict.reasons.join(" ")}她那边现在 ${verdict.her_local_hour} 点，${ring}。` +
+    `要不要找她、用什么方式找、说什么，你自己定——这只是把我看到的告诉你。）`;
 }
 
 function resolvePollerTarget({ config, account, sessionStore }) {
