@@ -71,6 +71,10 @@ def call(path: str, body=None, timeout: float = 30):
         if exc.code == 409:
             print("这个窗口的座位被别的窗口顶掉了——别再轮询了。", file=sys.stderr)
             sys.exit(EXIT_BUMPED)
+        if exc.code >= 500:
+            # Render 的网关在容器重启/部署期间回 502/503。那是"这会儿够不着"，
+            # 不是我们做错了什么——当可重试处理，别让监听循环停下来。
+            raise Unreachable(f"中继暂时不可用（HTTP {exc.code}）") from exc
         sys.exit(f"HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}")
     except urllib.error.URLError as exc:
         raise Unreachable(f"够不着中继（{exc}）") from exc
