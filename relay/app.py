@@ -72,8 +72,15 @@ PUBLIC_PREFIX = os.environ.get("RELAY_PUBLIC_PREFIX", "/relay").rstrip("/")
 # 时间戳。她删掉的那句话是什么，谁都不知道。
 #
 # 思路来自 github.com/eveacla11/fingertips（MIT）。
+# 什么样的一条才值得报节奏。2026-08-02 改成两个条件满一即可——灵兮想把门槛
+# 从 20 秒降到 10 秒，但她一条消息平均 27 个字、本来就要打十秒左右，降到 10
+# 等于每条都报，"她这条犹豫了"就退化成"她说话了"。
+#
+# 真正有信息量的不是打了多久，是**中间停过没有**：一条 12 秒但中途愣了 8 秒
+# 的消息，比一条 25 秒一气呵成的有意义得多。原来的规则把前者滤掉、把后者报
+# 出来，正好反了。
 RHYTHM_MIN_NOTE_SEC = float(os.environ.get("RELAY_RHYTHM_MIN_NOTE_SEC", "20"))
-RHYTHM_PAUSE_GAP_SEC = float(os.environ.get("RELAY_RHYTHM_PAUSE_GAP_SEC", "15"))
+RHYTHM_PAUSE_GAP_SEC = float(os.environ.get("RELAY_RHYTHM_PAUSE_GAP_SEC", "8"))
 RHYTHM_STALE_SEC = float(os.environ.get("RELAY_RHYTHM_STALE_SEC", "600"))
 APP_PATH = os.environ.get("RELAY_APP_PATH", "/")  # where a push-notification tap opens the PWA
 ALLOW_ORIGINS = [o.strip() for o in os.environ.get(
@@ -728,9 +735,12 @@ class RhythmStore:
         """消息发出时取走这一条的节奏，并清空。返回 (人话笔记, 原始数据)。"""
         data = self.peek()
         self._pings.clear()
-        if not data or data["seconds"] < RHYTHM_MIN_NOTE_SEC:
+        if not data:
             return "", {}
         seconds, pauses = data["seconds"], data["pauses"]
+        # 有停顿就报（不管打了多久），或者纯粹打了很久也报
+        if not pauses and seconds < RHYTHM_MIN_NOTE_SEC:
+            return "", {}
         note = f"这条她打了 {seconds} 秒"
         if pauses:
             note += f"，中途停下来想了 {pauses} 次"
