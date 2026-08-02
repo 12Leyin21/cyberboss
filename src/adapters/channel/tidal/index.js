@@ -56,8 +56,17 @@ function createTidalClient(env, config) {
     return { Authorization: `Bearer ${env.secret}`, ...extra };
   }
 
-  function toRawMessage({ id, text, ts, attachments }) {
-    return { __tidal: true, id, text: String(text || ""), ts: ts || "", attachments: attachments || [] };
+  function toRawMessage({ id, text, ts, attachments, rhythmNote }) {
+    return {
+      __tidal: true,
+      id,
+      text: String(text || ""),
+      ts: ts || "",
+      attachments: attachments || [],
+      // 这条消息是怎么被打出来的（fingertips）。中继在 payload 里给了
+      // rhythm_note，之前这边一直没接——数据发出来了，没人收。
+      rhythmNote: String(rhythmNote || ""),
+    };
   }
 
   // 附件预下载到本地收件箱：给大脑文件路径而不是 http 链接（它的工具读本地文件最顺）
@@ -140,6 +149,7 @@ function createTidalClient(env, config) {
             text: message.text,
             ts: message.ts,
             attachments: await localizeAttachments(message?.meta?.attachments),
+            rhythmNote: message?.meta?.rhythm_note,
           }));
         }
         saveLastId(id);
@@ -195,6 +205,7 @@ function createTidalClient(env, config) {
               text: payload.content,
               ts: payload.ts,
               attachments: await localizeAttachments(payload.attachments),
+              rhythmNote: payload.rhythm_note,
             }));
           }
         }
@@ -438,7 +449,13 @@ function createChannelAdapter(config) {
     normalizeIncomingMessage(message) {
       if (message && message.__tidal) {
         const attachmentText = tidal.describeAttachments(message.attachments);
-        const text = [String(message.text || "").trim(), attachmentText]
+        // 打字节奏单独占一行并加〔〕标记：它不是她说的话，是关于这句话怎么被
+        // 打出来的注解。理想情况下它该走独立字段，但到大脑这一层只有一条文本
+        // 通道，所以退而求其次——用一个她永远不会用的括号把它和正文分开。
+        const rhythmText = message.rhythmNote
+          ? `〔打字节奏〕${message.rhythmNote}`
+          : "";
+        const text = [String(message.text || "").trim(), attachmentText, rhythmText]
           .filter(Boolean)
           .join("\n");
         if (!text || consumeMirrored(text)) {
