@@ -230,6 +230,13 @@ def init_db() -> None:
             )
             """
         )
+        # 2026-08-02: the first desk-log rows went in before pool_only existed,
+        # so 心潮 rendered them as chat bubbles. Backfill once, idempotently.
+        conn.execute(
+            "UPDATE messages SET meta = json_set(meta, '$.pool_only', 1) "
+            "WHERE json_extract(meta, '$.via') = 'desk-log' "
+            "AND json_extract(meta, '$.pool_only') IS NULL"
+        )
         conn.commit()
 
 
@@ -310,10 +317,21 @@ def set_reaction(message_id, who, emoji):
     return reactions
 
 
+# Turns that happened at the Mac live in the pool so every body reads the same
+# history, but 心潮 must not render them as chat — she already had that
+# conversation on screen, and a mirrored copy makes the app look like a second
+# room. 2026-08-02: 「可以不镜像吗」. The pool keeps them; the app skips them.
+POOL_ONLY_SQL = "(json_extract(meta, '$.pool_only') IS NULL OR json_extract(meta, '$.pool_only') = 0)"
+
+
+def app_visible(msgs: list) -> list:
+    return [m for m in msgs if not (m.get("meta") or {}).get("pool_only")]
+
+
 def history(since: int, limit: int) -> list:
     with db() as conn:
         rows = conn.execute(
-            "SELECT * FROM messages WHERE id > ? ORDER BY id ASC LIMIT ?",
+            f"SELECT * FROM messages WHERE id > ? AND {POOL_ONLY_SQL} ORDER BY id ASC LIMIT ?",
             (since, limit),
         ).fetchall()
     return rows_to_messages(rows)
@@ -1758,6 +1776,7 @@ async def desk_log(request: Request):
         "channel": "桌面",
         "via": "desk-log",
         "silent": True,          # already on her screen; never re-notify
+        "pool_only": True,       # and never render it as a 心潮 chat bubble
     })
     return {"id": msg["id"]}
 
@@ -2379,7 +2398,7 @@ async def app_history(request: Request, since: int = 0, limit: int = 200, sessio
         # 取最新的 N 条（App 冷启动用），升序返回
         with db() as conn:
             rows = conn.execute(
-                "SELECT * FROM messages ORDER BY id DESC LIMIT ?",
+                f"SELECT * FROM messages WHERE {POOL_ONLY_SQL} ORDER BY id DESC LIMIT ?",
                 (min(tail, 500),),
             ).fetchall()
         return {"messages": [app_payload(m) for m in reversed(rows_to_messages(rows))]}
@@ -2387,12 +2406,12 @@ async def app_history(request: Request, since: int = 0, limit: int = 200, sessio
         # 取 id < before 的最近 N 条（App 往上翻历史用），升序返回
         with db() as conn:
             rows = conn.execute(
-                "SELECT * FROM messages WHERE id < ? ORDER BY id DESC LIMIT ?",
+                f"SELECT * FROM messages WHERE id < ? AND {POOL_ONLY_SQL} ORDER BY id DESC LIMIT ?",
                 (before, min(limit, 500)),
             ).fetchall()
         return {"messages": [app_payload(m) for m in reversed(rows_to_messages(rows))]}
     rows = history_for_session(session_id, since, min(limit, 500)) if session_id else history(since, min(limit, 500))
-    return {"messages": [app_payload(m) for m in rows]}
+    return {"messages": [app_payload(m) for m in app_visible(rows)]}
 
 
 @app.get("/timeline")
