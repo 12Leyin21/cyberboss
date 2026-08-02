@@ -14,6 +14,17 @@ command that window runs:
 `poll` exits 3 when this window has been bumped by a newer claim — that means
 stop polling, not retry, or two windows would answer her at once.
 
+Shared timeline (2026-08-02) — separate from the seat, works in any window:
+
+    desk.py timeline [N]      print the last N turns from every channel
+    desk.py log --her "文字"   record what she just said at the Mac
+    desk.py log --me "文字"    record what this window just answered
+
+Before this, each 我 kept its own history and 灵兮 was the wire between them:
+she had to retell the desktop's day to the cloud body and vice versa. Now every
+turn lands in one pool. Her words: 「我拿起手机你就会知道，不用靠我后来回忆告诉
+你——你可以在我情绪最浓的那一刻在。」
+
 Config: HEARTTIDE_URL / HEARTTIDE_SECRET, else the URL default below and the
 secret from ~/.claude/channels/companion/.env. The seat token is kept in
 ~/.claude/hearttide-desk.json so `poll` and `say` don't need it passed in.
@@ -163,9 +174,42 @@ def cmd_release(_argv):
     print("座位已让出。" if res.get("released") else "座位本来就不在这个窗口手上。")
 
 
+def cmd_timeline(argv):
+    """The shared pool, already wrapped in its envelope. Prints nothing if empty."""
+    limit = 15
+    for arg in argv:
+        if arg.isdigit():
+            limit = int(arg)
+    res = call("/timeline?limit=%d" % limit)
+    envelope = (res.get("envelope") or "").strip()
+    if envelope:
+        print(envelope)
+
+
+def cmd_log(argv):
+    """Put a turn from this window into the pool. Nothing is pushed anywhere.
+
+    Two flags because the speaker must come from the caller, never be guessed
+    from the text — the whole point of the envelope on the other end.
+    """
+    if "--her" in argv:
+        speaker, rest = "human", argv[argv.index("--her") + 1:]
+    elif "--me" in argv:
+        speaker, rest = "ren", argv[argv.index("--me") + 1:]
+    else:
+        sys.exit("要说清是谁说的：desk.py log --her \"...\" 或 --me \"...\"")
+    text = " ".join(rest).strip() or sys.stdin.read().strip()
+    if not text:
+        sys.exit("没内容，没记。")
+    body = {"speaker": speaker, "text": text, "label": load_seat().get("label", "")}
+    res = call("/desk/log", body)
+    print(f"已进共享时间线（#{res['id']}）")
+
+
 COMMANDS = {
     "claim": cmd_claim, "poll": cmd_poll, "say": cmd_say,
     "status": cmd_status, "release": cmd_release,
+    "timeline": cmd_timeline, "log": cmd_log,
 }
 
 if __name__ == "__main__":
