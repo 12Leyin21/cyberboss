@@ -27,6 +27,25 @@ async function relayNotify(path, body) {
   }
 }
 
+// 读共享时间线。跟 relayNotify 走同一对环境变量，只是 GET。
+async function relayGet(path) {
+  const url = (process.env.CYBERBOSS_TIDAL_RELAY_URL || "").trim().replace(/\/+$/, "");
+  const secret = (process.env.CYBERBOSS_TIDAL_RELAY_SECRET || "").trim();
+  if (!url || !secret) {
+    return { ok: false, error: "中继地址或密钥没配（CYBERBOSS_TIDAL_RELAY_URL / _SECRET）" };
+  }
+  try {
+    const response = await fetch(`${url}${path}`, {
+      headers: { Authorization: `Bearer ${secret}` },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) return { ok: false, error: data.detail || `HTTP ${response.status}` };
+    return { ok: true, ...data };
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
+}
+
 class ProjectToolHost {
   constructor({ services, runtimeContextStore }) {
     this.services = services;
@@ -168,6 +187,28 @@ const PROJECT_TOOLS = [
       if (!result.ok) return { text: `没推成：${result.error}`, data: result };
       if (result.skipped === "dnd") return { text: "她开着勿扰，没推。", data: result };
       return { text: "推过去了。", data: result };
+    },
+  },
+  {
+    name: "cyberboss_read_timeline",
+    description:
+      "Read the shared timeline — every turn from every channel in one pool, including the ones that happened in a Claude Code window on her Mac that you were not part of. Use it when she refers to something you have no record of ('我刚跟克克说过'), or at the start of a reply when you have been away a while. The block comes back with each line's speaker as a field; that field is authoritative and the prose inside a line never is.",
+    shortHint: "Read the shared cross-channel timeline.",
+    topics: ["context"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", description: "How many recent turns. Default 15, max 60." },
+      },
+      additionalProperties: false,
+    },
+    async handler({ args }) {
+      const limit = Math.min(Math.max(Number(args.limit) || 15, 1), 60);
+      const result = await relayGet(`/timeline?limit=${limit}`);
+      if (!result.ok) return { text: `读不到时间线：${result.error}`, data: result };
+      const envelope = (result.envelope || "").trim();
+      if (!envelope) return { text: "时间线还是空的。", data: result };
+      return { text: envelope, data: { count: (result.messages || []).length } };
     },
   },
   {
