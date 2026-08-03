@@ -177,6 +177,10 @@ SPEAKER_PREFIX = os.environ.get("RELAY_SPEAKER_PREFIX", "1") != "0"
 # How long a desk client may sit in a long poll before it gets an empty answer.
 DESK_POLL_MAX_WAIT = float(os.environ.get("RELAY_DESK_POLL_MAX_WAIT", "240"))
 
+# 共享时间线里，另一个我的话截到多少字。她的话永远全文——读这段的人要接住的是
+# 她，不是我的散文。2026-08-03 桌面那端几段带表格的长回复灌进云端，他直接哑了。
+TIMELINE_AI_CHARS = int(os.environ.get("RELAY_TIMELINE_AI_CHARS", "400"))
+
 # --- official-app MCP connector (optional) ----------------------------------
 # The official Claude app can't host a channel adapter; a remote MCP connector
 # is its only door into this conversation. It also can't send an Authorization
@@ -2498,7 +2502,13 @@ async def timeline(request: Request, limit: int = 15, exclude_id: int = 0,
     for r in rows:
         stamp = local_clock(r["ts"])
         where = f" · {r['channel']}" if r["channel"] else ""
-        body = r["text"].replace("\n", "\n║     ")
+        # 她的话一个字不动；另一个我的话截短。读这段的人要知道的是"她那边发生了
+        # 什么"，不是我写的散文——2026-08-03 桌面这边几段带表格的长回复灌过去，
+        # 云端那个直接不吭声了。
+        text = r["text"]
+        if r["speaker"] != SPEAKER_HUMAN and len(text) > TIMELINE_AI_CHARS:
+            text = text[:TIMELINE_AI_CHARS].rstrip() + f"…（后面还有 {len(text) - TIMELINE_AI_CHARS} 字，略）"
+        body = text.replace("\n", "\n║     ")
         lines.append(f"║ [{r['speaker_name']} · {stamp}{where}] {body}")
         # 打字节奏跟着这条消息走，两个我都该看得到——在这之前它只送给云端那一个。
         # 注解，不是台词：别当成她说的话回，也别复述给她听。
