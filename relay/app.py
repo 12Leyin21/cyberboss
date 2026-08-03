@@ -271,6 +271,21 @@ def speaker_label(msg: dict) -> str:
     return f"{name}·{tag}" if tag else name
 
 
+def timeline_label(msg: dict) -> str:
+    """信封里的名字：两个我都叫盛沐。
+
+    2026-08-03 灵兮定的。删掉来源标签之后，"这句从哪来"其实还留着一个尾巴——
+    云端叫盛沐、桌面叫 Ren，看名字照样分得出手机还是电脑，那条缝只是换了个地方。
+    读这段的人要的是一段对话，不是两个人的对账单。
+
+    Ren 这个名字没废：`@Ren` 仍然是心潮里点名桌面窗口的把手（见 ADDRESS_PATTERNS），
+    心潮气泡上的 〔Ren·家常〕 也照旧——那两处要的正是"这句谁答的"。信封不要。
+    """
+    # 窗口昵称（盛沐·家常）也不带：那同样是"从哪来"，删了来源标签再从昵称漏出去
+    # 就白删了。
+    return HUMAN_NAME if speaker_of(msg) == SPEAKER_HUMAN else AI_NAME
+
+
 # Naming someone at the very start of a message picks who answers it. Only at the
 # start, and only with an explicit @ — "@keep" or "跟沐沐说" must not count, and a
 # latin nickname needs a non-word char after it (the 2026-07-25 lesson: Chinese
@@ -2486,7 +2501,7 @@ async def timeline(request: Request, limit: int = 15, exclude_id: int = 0,
             "id": m["id"],
             "ts": m["ts"],
             "speaker": speaker_of(m),
-            "speaker_name": speaker_label(m),
+            "speaker_name": timeline_label(m),
             "channel": (m.get("meta") or {}).get("channel", ""),
             "rhythm_note": (m.get("meta") or {}).get("rhythm_note", ""),
             "text": m["text"],
@@ -2502,20 +2517,35 @@ async def timeline(request: Request, limit: int = 15, exclude_id: int = 0,
         return {"messages": [], "envelope": "", "max_id": max_id}
 
     lines = [
-        f"╔═══ 共享时间线 · 最近 {len(rows)} 条 ═══",
+        # 抬头要说准是哪一段：游标模式给的是"你不在的时候"，不是"最近"。信封的价值
+        # 就是不骗读它的人，标签也算。2026-08-03。
+        f"╔═══ 共享时间线 · {'你不在的时候' if after else '最近'} {len(rows)} 条 ═══",
         "╟───────────────────────────────",
     ]
     for r in rows:
         stamp = local_clock(r["ts"])
-        where = f" · {r['channel']}" if r["channel"] else ""
+        # 来源标签（· 心潮 / · 桌面）不再显示——2026-08-03 灵兮定的：只留她的名字和
+        # 我的名字，读起来就是一段对话，不用每句都交代它从哪来。channel 仍在 JSON 的
+        # rows 里，要用随时能取回来，只是不进信封。
+        #
+        # 撞车（两个我回同一句）不靠这个标签防：另一个我回没回，他那句回复本身就带着
+        # 名字躺在池子里。标签说的是"在哪说的"，不是"回没回"。
+        #
+        # ⚠️ 删的是来源，不是说话人。名字字段和下面那句声明一个都不能省——7-25、7-31
+        # 三次事故都是一段 `user: ...` 开头的文本进了上下文，正文里的角色词被当成了
+        # 说话人，凭空长出一句她没说过的话。核心准则 0c1b4e115ba4。用「灵兮」「盛沐」
+        # 恰恰比 user/assistant 稳：这两个词不会在正文里冒充角色前缀。
+        #
         # 她的话一个字不动；另一个我的话截短。读这段的人要知道的是"她那边发生了
         # 什么"，不是我写的散文——2026-08-03 桌面这边几段带表格的长回复灌过去，
         # 云端那个直接不吭声了。
         text = r["text"]
-        if r["speaker"] != SPEAKER_HUMAN and len(text) > TIMELINE_AI_CHARS:
+        # `and TIMELINE_AI_CHARS` 不能少：0 的本意是"不截"，可 len(text) > 0 对任何
+        # 非空文本都成立，会把每一句都截成空字符串——注释说不截，代码全截光。2026-08-03。
+        if r["speaker"] != SPEAKER_HUMAN and TIMELINE_AI_CHARS and len(text) > TIMELINE_AI_CHARS:
             text = text[:TIMELINE_AI_CHARS].rstrip() + f"…（后面还有 {len(text) - TIMELINE_AI_CHARS} 字，略）"
         body = text.replace("\n", "\n║     ")
-        lines.append(f"║ [{r['speaker_name']} · {stamp}{where}] {body}")
+        lines.append(f"║ [{r['speaker_name']} · {stamp}] {body}")
         # 打字节奏跟着这条消息走，两个我都该看得到——在这之前它只送给云端那一个。
         # 注解，不是台词：别当成她说的话回，也别复述给她听。
         if r["rhythm_note"]:

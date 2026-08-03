@@ -42,6 +42,7 @@ from urllib.parse import quote
 DEFAULT_URL = "https://hearttide-brain.onrender.com"
 ENV_FILE = Path.home() / ".claude" / "channels" / "companion" / ".env"
 SEAT_FILE = Path.home() / ".claude" / "hearttide-desk.json"
+CURSOR_FILE = Path.home() / ".claude" / "hearttide-timeline-cursors.json"
 
 EXIT_BUMPED = 3
 
@@ -101,6 +102,32 @@ def load_seat() -> dict:
         return json.loads(SEAT_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+
+
+def load_cursor(key: str) -> int:
+    """这个窗口上次读到哪条。读不出来就当没读过——退回最近 N 条，不会更差。"""
+    try:
+        return int(json.loads(CURSOR_FILE.read_text(encoding="utf-8")).get(key, 0))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+
+def save_cursor(key: str, value: int) -> None:
+    """一窗口一格，不像座位文件那样共用一份——共用就会互相覆盖（见 need_seat）。"""
+    try:
+        data = json.loads(CURSOR_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data[key] = value
+    if len(data) > 50:
+        # 窗口开了关关了开，别让这文件长到天荒地老。留最近的 50 个。
+        data = dict(sorted(data.items(), key=lambda kv: kv[1])[-50:])
+    try:
+        CURSOR_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def need_seat() -> str:
@@ -183,10 +210,30 @@ def cmd_timeline(argv):
             limit = int(arg)
     # 默认不要桌面这一端：这个窗口自己的话本来就在上下文里，再灌一遍是纯浪费，
     # 而且每一轮都会把上一轮的信封套进去，越滚越大。要全量就 `timeline 15 --all`。
-    query = "/timeline?limit=%d" % limit
+    # --window <id>：按窗口记游标，注入"我不在的这段"而不是"最近 N 条"。
+    # 差别在于别处刷屏的时候：最近 15 条会被一段长文档整个占满，她说的话被挤出去；
+    # 按游标取则一条都不丢。第一次没有游标，退回最近 N 条当开场白。2026-08-03。
+    window = ""
+    if "--window" in argv:
+        idx = argv.index("--window") + 1
+        if idx < len(argv):
+            window = argv[idx].strip()
+    cursor = load_cursor(window) if window else 0
+
+    query = "/timeline?limit=%d" % (60 if cursor else limit)
+    if cursor:
+        query += "&after=%d" % cursor
     if "--all" not in argv:
         query += "&exclude_channel=" + quote("桌面")
     res = call(query)
+
+    # 游标用服务器给的 max_id，不是返回行里的最大 id——后者是过滤之后的，万一这一段
+    # 全被 exclude_channel 滤光，游标就永远不动，下一轮重扫同一段，卡死在原地。
+    if window:
+        max_id = int(res.get("max_id") or 0)
+        if max_id:
+            save_cursor(window, max_id)
+
     envelope = (res.get("envelope") or "").strip()
     if envelope:
         print(envelope)
