@@ -37,6 +37,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import quote
 
 DEFAULT_URL = "https://hearttide-brain.onrender.com"
 ENV_FILE = Path.home() / ".claude" / "channels" / "companion" / ".env"
@@ -180,7 +181,12 @@ def cmd_timeline(argv):
     for arg in argv:
         if arg.isdigit():
             limit = int(arg)
-    res = call("/timeline?limit=%d" % limit)
+    # 默认不要桌面这一端：这个窗口自己的话本来就在上下文里，再灌一遍是纯浪费，
+    # 而且每一轮都会把上一轮的信封套进去，越滚越大。要全量就 `timeline 15 --all`。
+    query = "/timeline?limit=%d" % limit
+    if "--all" not in argv:
+        query += "&exclude_channel=" + quote("桌面")
+    res = call(query)
     envelope = (res.get("envelope") or "").strip()
     if envelope:
         print(envelope)

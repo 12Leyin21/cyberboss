@@ -2420,7 +2420,8 @@ async def app_history(request: Request, since: int = 0, limit: int = 200, sessio
 
 @app.get("/timeline")
 async def timeline(request: Request, limit: int = 15, exclude_id: int = 0,
-                   after: int = 0, channel: str = "", format: str = "envelope"):
+                   after: int = 0, channel: str = "", exclude_channel: str = "",
+                   format: str = "envelope"):
     """The shared timeline — one pool, read by whichever body is awake.
 
     2026-08-02. Until now each 我 kept its own history: the cloud brain served
@@ -2461,8 +2462,14 @@ async def timeline(request: Request, limit: int = 15, exclude_id: int = 0,
     scanned_max = max((m["id"] for m in msgs), default=after)
     if exclude_id:
         msgs = [m for m in msgs if m["id"] != exclude_id]
+    # Each body injects only the gap it was absent for. The desktop window
+    # already has its own turns in context; re-feeding them costs tokens and
+    # grows every round. So: 桌面 injects everything-but-桌面, the cloud injects
+    # 桌面 only. 2026-08-03.
     if channel:
         msgs = [m for m in msgs if (m.get("meta") or {}).get("channel") == channel]
+    if exclude_channel:
+        msgs = [m for m in msgs if (m.get("meta") or {}).get("channel") != exclude_channel]
 
     rows = [
         {
