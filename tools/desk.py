@@ -223,7 +223,11 @@ def cmd_timeline(argv):
     query = "/timeline?limit=%d" % (60 if cursor else limit)
     if cursor:
         query += "&after=%d" % cursor
-    if "--all" not in argv:
+    # 排除桌面那一端是为了不把这个窗口自己说过的话再灌一遍。但**第一次读的窗口
+    # 上下文是空的，没有任何东西算重复**——它反而最需要看到刚才在别的窗口发生了
+    # 什么。她的场景：合上电脑再打开，新窗口本来会只看到手机上的对话，看不见她
+    # 上一个窗口刚说过的话。2026-08-03。
+    if "--all" not in argv and cursor:
         query += "&exclude_channel=" + quote("桌面")
     res = call(query)
 
