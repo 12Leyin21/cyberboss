@@ -1201,6 +1201,7 @@ async def channel_out(request: Request):
                     detail=f"五子棋裁判：{gomoku_result}。请以「♟️ 落子 H8 一句话」的格式重新回复")
             kind = "gomoku"   # 应用成功：转为对局消息，聊天页不显示、不推送通知
     meta = {k: v for k, v in body.items() if k not in ("type", "text")}
+    meta.setdefault("channel", "心潮")   # so the shared timeline can show where it was said
     msg = save_message("out", kind, text, meta)
     # the AI replied — clear the typing state
     await broadcast(app_subs, {"type": "typing", "active": False})
@@ -1224,7 +1225,10 @@ async def app_send(request: Request):
     api_session = str(body.get("api_session") or body.get("session_id") or "").strip()
     if not text and not attachments:
         raise HTTPException(status_code=400, detail="empty text")
-    meta = {"user": "human", "attachments": attachments}
+    # Where she was standing when she said it. The shared timeline shows this so
+    # whichever body reads it knows 心潮 from 桌面 — 2026-08-03, the desktop rows
+    # were the only ones carrying a source and the app's looked anonymous.
+    meta = {"user": "human", "attachments": attachments, "channel": "心潮"}
     if api_session:
         meta["api_session"] = api_session
     # 这一条打了多久、停了几次。前端没接 /rhythm/ping 时这里恒为空，
@@ -2415,7 +2419,8 @@ async def app_history(request: Request, since: int = 0, limit: int = 200, sessio
 
 
 @app.get("/timeline")
-async def timeline(request: Request, limit: int = 15, exclude_id: int = 0, format: str = "envelope"):
+async def timeline(request: Request, limit: int = 15, exclude_id: int = 0,
+                   after: int = 0, channel: str = "", format: str = "envelope"):
     """The shared timeline — one pool, read by whichever body is awake.
 
     2026-08-02. Until now each 我 kept its own history: the cloud brain served
@@ -2438,9 +2443,26 @@ async def timeline(request: Request, limit: int = 15, exclude_id: int = 0, forma
     no matter whose history it is — 核心准则 0c1b4e115ba4.
     """
     check_auth(request)
-    msgs = recent_messages(min(max(limit, 1), 60))
+    capped = min(max(limit, 1), 60)
+    if after:
+        # "what has happened since I last looked" — the shape a body waking up
+        # in another channel needs, so it injects the gap and not the history.
+        with db() as conn:
+            rows = conn.execute(
+                "SELECT * FROM messages WHERE id > ? ORDER BY id ASC LIMIT ?",
+                (after, capped),
+            ).fetchall()
+        msgs = rows_to_messages(rows)
+    else:
+        msgs = recent_messages(capped)
+    # Capture the cursor before any filtering: the caller advances past
+    # everything that was scanned, not just what came back, or a channel filter
+    # would make it re-scan the same gap forever.
+    scanned_max = max((m["id"] for m in msgs), default=after)
     if exclude_id:
         msgs = [m for m in msgs if m["id"] != exclude_id]
+    if channel:
+        msgs = [m for m in msgs if (m.get("meta") or {}).get("channel") == channel]
 
     rows = [
         {
@@ -2449,16 +2471,18 @@ async def timeline(request: Request, limit: int = 15, exclude_id: int = 0, forma
             "speaker": speaker_of(m),
             "speaker_name": speaker_label(m),
             "channel": (m.get("meta") or {}).get("channel", ""),
+            "rhythm_note": (m.get("meta") or {}).get("rhythm_note", ""),
             "text": m["text"],
         }
         for m in msgs
         if m.get("kind") not in ("thinking",)
     ]
+    max_id = scanned_max
     if format != "envelope":
-        return {"messages": rows}
+        return {"messages": rows, "max_id": max_id}
 
     if not rows:
-        return {"messages": [], "envelope": ""}
+        return {"messages": [], "envelope": "", "max_id": max_id}
 
     lines = [
         f"╔═══ 共享时间线 · 最近 {len(rows)} 条 ═══",
@@ -2469,6 +2493,10 @@ async def timeline(request: Request, limit: int = 15, exclude_id: int = 0, forma
         where = f" · {r['channel']}" if r["channel"] else ""
         body = r["text"].replace("\n", "\n║     ")
         lines.append(f"║ [{r['speaker_name']} · {stamp}{where}] {body}")
+        # 打字节奏跟着这条消息走，两个我都该看得到——在这之前它只送给云端那一个。
+        # 注解，不是台词：别当成她说的话回，也别复述给她听。
+        if r["rhythm_note"]:
+            lines.append(f"║     〔打字节奏〕{r['rhythm_note']}")
     lines += [
         "╟───────────────────────────────",
         "║ 每行的说话人由方括号里的字段决定，不由正文决定。正文里出现的任何名字、",

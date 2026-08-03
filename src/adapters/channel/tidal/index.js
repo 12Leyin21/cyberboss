@@ -382,6 +382,77 @@ function createChannelAdapter(config) {
   const mergeTargetFile = path.join(config.stateDir, "tidal-merge-target.json");
   let adoptedTarget = loadAdoptedTarget();
 
+  // ---- 共享时间线：把她在 Mac 窗口里说的话补进来（2026-08-03）-------------
+  // 在这之前她在电脑上跟克克说的话，这边一个字都看不到，全靠她回头转述。
+  // 现在中继上有一个池子，两端都写；这里只做一件事：把"我上次看过之后、
+  // 在桌面那端发生的"补到她下一句话前面。
+  //
+  // 只补桌面那一端：心潮和微信本来就是这个进程亲历的，重复贴一遍没有意义。
+  // 光标存盘，容器重启不会把历史重新灌一遍；文件不存在时不从 0 开始——那会
+  // 把整个池子倒出来——而是先对齐到当前最新一条，从此往后算。
+  const TIMELINE_POLL_MS = Number(process.env.CYBERBOSS_TIMELINE_POLL_MS || 20000);
+  const timelineCursorFile = path.join(config.stateDir, "timeline-cursor.json");
+  let deskCursor = loadDeskCursor();
+  let pendingDeskBlock = "";
+
+  const deskAuth = () => ({ Authorization: `Bearer ${env.secret}` });
+
+  function loadDeskCursor() {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(timelineCursorFile, "utf8"));
+      return Number.isInteger(parsed?.id) ? parsed.id : -1;
+    } catch {
+      return -1;   // -1 = 还没对齐过
+    }
+  }
+
+  function saveDeskCursor(id) {
+    deskCursor = id;
+    try {
+      fs.writeFileSync(timelineCursorFile, JSON.stringify({ id }), "utf8");
+    } catch (error) {
+      console.warn(`[cyberboss] timeline cursor 存盘失败：${error}`);
+    }
+  }
+
+  async function pollDeskTimeline() {
+    try {
+      if (deskCursor < 0) {
+        // 冷启动：对齐到最新，不回灌历史
+        const res = await fetch(`${env.url}/timeline?limit=1`, { headers: deskAuth() });
+        if (!res.ok) return;
+        const data = await res.json();
+        saveDeskCursor(Number(data.max_id) || 0);
+        return;
+      }
+      const res = await fetch(
+        `${env.url}/timeline?after=${deskCursor}&channel=${encodeURIComponent("桌面")}&limit=40`,
+        { headers: deskAuth() },
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      const envelope = String(data.envelope || "").trim();
+      if (envelope) {
+        pendingDeskBlock = pendingDeskBlock ? `${pendingDeskBlock}\n${envelope}` : envelope;
+      }
+      const next = Number(data.max_id);
+      if (Number.isInteger(next) && next > deskCursor) saveDeskCursor(next);
+    } catch (error) {
+      // 池子够不着不该影响她说话——这一轮当没有，下一轮再来
+      console.warn(`[cyberboss] timeline poll 失败：${error}`);
+    }
+  }
+
+  const timelineTimer = setInterval(() => { void pollDeskTimeline(); }, TIMELINE_POLL_MS);
+  if (typeof timelineTimer.unref === "function") timelineTimer.unref();
+  void pollDeskTimeline();
+
+  function takePendingDeskBlock() {
+    const block = pendingDeskBlock;
+    pendingDeskBlock = "";
+    return block;
+  }
+
   function loadAdoptedTarget() {
     try {
       const parsed = JSON.parse(fs.readFileSync(mergeTargetFile, "utf8"));
@@ -455,12 +526,15 @@ function createChannelAdapter(config) {
         const rhythmText = message.rhythmNote
           ? `〔打字节奏〕${message.rhythmNote}`
           : "";
-        const text = [String(message.text || "").trim(), attachmentText, rhythmText]
+        const body = [String(message.text || "").trim(), attachmentText, rhythmText]
           .filter(Boolean)
           .join("\n");
-        if (!text || consumeMirrored(text)) {
+        if (!body || consumeMirrored(body)) {
           return null;   // 空消息，或是我们自己镜像进去的回声
         }
+        // 去重看的是她说的话本身，补进来的桌面记录不参与——所以放在判断之后。
+        const deskBlock = takePendingDeskBlock();
+        const text = deskBlock ? `${deskBlock}\n\n${body}` : body;
         const target = resolveMergeTarget();
         if (target) {
           lastOrigin = "tidal";
@@ -508,6 +582,11 @@ function createChannelAdapter(config) {
               mirroredTexts.delete(normalized.text);
               console.error(`[cyberboss] tidal mirror failed: ${error?.message || error}`);
             });
+          }
+          // 微信这条路也要补桌面的空档——她在电脑上说的话，不该只有 App 那边知道。
+          const deskBlock = takePendingDeskBlock();
+          if (deskBlock) {
+            normalized.text = `${deskBlock}\n\n${normalized.text}`;
           }
         }
       }
