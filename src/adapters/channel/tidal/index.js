@@ -394,6 +394,7 @@ function createChannelAdapter(config) {
   const timelineCursorFile = path.join(config.stateDir, "timeline-cursor.json");
   let deskCursor = loadDeskCursor();
   let pendingDeskBlock = "";
+  let pendingMaxId = 0;
 
   const deskAuth = () => ({ Authorization: `Bearer ${env.secret}` });
 
@@ -425,18 +426,18 @@ function createChannelAdapter(config) {
         saveDeskCursor(Number(data.max_id) || 0);
         return;
       }
+      // 光标在她说话之前不推进：每一轮都从同一个起点重新拉一整段，**覆盖**上一次
+      // 攒下的，而不是追加。第一版是追加，于是她隔几分钟不说话，沐沐那边就叠了
+      // 好几个信封头——她的原话「重复注入」。2026-08-03。
       const res = await fetch(
         `${env.url}/timeline?after=${deskCursor}&channel=${encodeURIComponent("桌面")}&limit=40`,
         { headers: deskAuth() },
       );
       if (!res.ok) return;
       const data = await res.json();
-      const envelope = String(data.envelope || "").trim();
-      if (envelope) {
-        pendingDeskBlock = pendingDeskBlock ? `${pendingDeskBlock}\n${envelope}` : envelope;
-      }
+      pendingDeskBlock = String(data.envelope || "").trim();
       const next = Number(data.max_id);
-      if (Number.isInteger(next) && next > deskCursor) saveDeskCursor(next);
+      pendingMaxId = Number.isInteger(next) && next > deskCursor ? next : deskCursor;
     } catch (error) {
       // 池子够不着不该影响她说话——这一轮当没有，下一轮再来
       console.warn(`[cyberboss] timeline poll 失败：${error}`);
@@ -447,9 +448,12 @@ function createChannelAdapter(config) {
   if (typeof timelineTimer.unref === "function") timelineTimer.unref();
   void pollDeskTimeline();
 
+  // 取走 = 他真的读到了，这时候光标才推进。轮询本身不推进，所以取之前掉线、
+  // 重启、或者根本没轮到她说话，那一段都不会丢。
   function takePendingDeskBlock() {
     const block = pendingDeskBlock;
     pendingDeskBlock = "";
+    if (block && pendingMaxId > deskCursor) saveDeskCursor(pendingMaxId);
     return block;
   }
 
