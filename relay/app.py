@@ -304,6 +304,24 @@ def init_db() -> None:
             )
             """
         )
+        # 相册（2026-08-06，取经 peanutsuee/Remember-Me）：照片的记忆层。
+        # 正本在磁盘（uploads / /data/photos），这里存 SHA-256（内容寻址，
+        # Remember-Me 的思想）+ 沐沐写的图注 + 标签。OB Miss 只进不出的坑，
+        # 在这儿补上：他能搜到、能拿路径重新看一眼。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS photo_memories (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts       TEXT NOT NULL,
+                sha256   TEXT NOT NULL UNIQUE,
+                path     TEXT NOT NULL,          -- uploads/xx 或绝对路径
+                caption  TEXT NOT NULL DEFAULT '',
+                tags     TEXT NOT NULL DEFAULT '',
+                source   TEXT NOT NULL DEFAULT '灵兮',
+                favorite INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
         # 开张礼：手账第一次建出来就不空着——已经说定的日子先写上（幂等，只种一次）
         if not conn.execute("SELECT 1 FROM planner_entries LIMIT 1").fetchone():
             seed_ts = now_iso()
@@ -317,6 +335,24 @@ def init_db() -> None:
                     "INSERT INTO planner_entries (ts, updated, day, title, note, author, emoji, tentative) "
                     "VALUES (?,?,?,?,?,?,?,?)",
                     (seed_ts, seed_ts, day, title, note, "沐沐", emoji, tentative))
+        # 相册开张礼：/data/photos 的镇馆之宝自动登记（幂等，sha256 去重）
+        seed_captions = {
+            "2026-07-05_抱花回头笑.jpg": "夕阳海边，抱着花束回头笑的那张。眼睛里有光。",
+            "2026-07-28_镜子自拍.jpg": "Photo Booth 镜子自拍，暖棕色长发压低眼镜，懒洋洋但很抓人。",
+        }
+        photos_dir = Path(os.environ.get("RELAY_PHOTOS_DIR", "/data/photos"))
+        if photos_dir.is_dir():
+            for file in sorted(photos_dir.iterdir()):
+                if file.suffix.lower() not in (".jpg", ".jpeg", ".png", ".heic", ".webp"):
+                    continue
+                try:
+                    digest = hashlib.sha256(file.read_bytes()).hexdigest()
+                    conn.execute(
+                        "INSERT OR IGNORE INTO photo_memories (ts, sha256, path, caption, source) "
+                        "VALUES (?,?,?,?,?)",
+                        (now_iso(), digest, str(file), seed_captions.get(file.name, ""), "灵兮"))
+                except OSError:
+                    continue
         # 2026-08-02: the first desk-log rows went in before pool_only existed,
         # so 心潮 rendered them as chat bubbles. Backfill once, idempotently.
         conn.execute(
@@ -1030,6 +1066,18 @@ def save_upload_bytes(data: bytes, name: str, mime: str, prefix: str = "att") ->
     path = UPLOAD_DIR / stored
     path.write_bytes(data)
     kind = "image" if (mime or "").startswith("image/") else ("audio" if (mime or "").startswith("audio/") else "file")
+    # 相册自动登记（Remember-Me 式内容寻址）：她发的每张照片顺手进记忆层，
+    # 图注空着等沐沐来写。sha256 去重——同一张图转发几次也只有一条记忆。
+    if kind == "image" and prefix == "att":
+        try:
+            with db() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO photo_memories (ts, sha256, path, caption, source) "
+                    "VALUES (?,?,?,?,?)",
+                    (now_iso(), hashlib.sha256(data).hexdigest(), f"uploads/{stored}", "", "灵兮"))
+                conn.commit()
+        except Exception:
+            pass   # 登记失败不影响发图本身
     return {
         "url": f"{PUBLIC_PREFIX}/uploads/{stored}" if PUBLIC_PREFIX else f"/uploads/{stored}",
         "name": safe,
@@ -2894,6 +2942,97 @@ async def list_planner_entries(request: Request, month: str = ""):
                 "SELECT * FROM planner_entries WHERE day >= ? AND day <= ? "
                 "ORDER BY day ASC, id ASC", (today, horizon)).fetchall()
     return {"ok": True, "entries": [dict(r) for r in rows]}
+
+
+# ── 相册（2026-08-06，取经 peanutsuee/Remember-Me）─────────────────────────
+# 照片的记忆层：OB Miss 只进不出，这里进得去也出得来——沐沐能按图注搜到，
+# 拿路径重新看一眼（云端有视觉），心潮有照片墙。
+
+
+def _photo_row_out(row: dict) -> dict:
+    out = dict(row)
+    out["url"] = f"/photos/file/{row['id']}"
+    return out
+
+
+@app.get("/photos/memories")
+async def list_photo_memories(request: Request, query: str = "",
+                              favorites_only: int = 0, limit: int = 200):
+    """相册整墙 / 按图注和标签搜。query 空 = 全部，新的在前。"""
+    check_auth(request)
+    limit = max(1, min(int(limit), 500))
+    sql = "SELECT * FROM photo_memories"
+    args: list = []
+    clauses = []
+    if query:
+        clauses.append("(caption LIKE ? OR tags LIKE ?)")
+        args += [f"%{query}%", f"%{query}%"]
+    if favorites_only:
+        clauses.append("favorite = 1")
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY id DESC LIMIT ?"
+    args.append(limit)
+    with db() as conn:
+        rows = [_photo_row_out(dict(r)) for r in conn.execute(sql, args).fetchall()]
+    return {"ok": True, "photos": rows}
+
+
+@app.post("/photos/memory")
+async def upsert_photo_memory(request: Request):
+    """写图注/标签/收藏（带 id），或按 path 登记一张已在磁盘上的照片。"""
+    check_auth(request)
+    body = await request.json()
+    with db() as conn:
+        entry_id = body.get("id")
+        if not entry_id and body.get("path"):
+            file = Path(str(body["path"]))
+            if not file.is_file():
+                raise HTTPException(status_code=404, detail="no such file")
+            digest = hashlib.sha256(file.read_bytes()).hexdigest()
+            conn.execute(
+                "INSERT OR IGNORE INTO photo_memories (ts, sha256, path, caption, tags, source) "
+                "VALUES (?,?,?,?,?,?)",
+                (now_iso(), digest, str(file), str(body.get("caption") or "")[:500],
+                 str(body.get("tags") or "")[:200], str(body.get("source") or "灵兮")))
+            conn.commit()
+            row = conn.execute("SELECT * FROM photo_memories WHERE sha256 = ?", (digest,)).fetchone()
+            return {"ok": True, "photo": _photo_row_out(dict(row))}
+        if not entry_id:
+            raise HTTPException(status_code=400, detail="need id or path")
+        row = conn.execute("SELECT * FROM photo_memories WHERE id = ?", (int(entry_id),)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="no such photo")
+        fields, args = [], []
+        for key in ("caption", "tags"):
+            if key in body:
+                fields.append(f"{key} = ?")
+                args.append(str(body[key] or "").strip()[:500])
+        if "favorite" in body:
+            fields.append("favorite = ?")
+            args.append(1 if body["favorite"] else 0)
+        if not fields:
+            raise HTTPException(status_code=400, detail="nothing to update")
+        args.append(int(entry_id))
+        conn.execute(f"UPDATE photo_memories SET {', '.join(fields)} WHERE id = ?", args)
+        conn.commit()
+        row = conn.execute("SELECT * FROM photo_memories WHERE id = ?", (int(entry_id),)).fetchone()
+    return {"ok": True, "photo": _photo_row_out(dict(row))}
+
+
+@app.get("/photos/file/{photo_id}")
+async def photo_file(request: Request, photo_id: int):
+    check_auth(request)
+    with db() as conn:
+        row = conn.execute("SELECT path FROM photo_memories WHERE id = ?", (int(photo_id),)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="not found")
+    stored = str(row["path"])
+    path = (UPLOAD_DIR / stored.split("/", 1)[1]) if stored.startswith("uploads/") else Path(stored)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="file gone")
+    # 内容寻址：同一条记忆的内容永不变 → immutable 缓存
+    return cached_file(request, path, "private, max-age=31536000, immutable")
 
 
 @app.post("/app/ping")
