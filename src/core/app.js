@@ -42,6 +42,7 @@ const {
 } = require("../adapters/runtime/shared/approval-command");
 const { runSystemCheckinPoller } = require("../app/system-checkin-poller");
 const { createProjectTooling } = require("../tools/create-project-tooling");
+const { getPulseEngine } = require("../services/pulse");
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MIN_LONG_POLL_TIMEOUT_MS = 2_000;
 const SESSION_EXPIRED_ERRCODE = -14;
@@ -61,6 +62,8 @@ function createRuntimeAdapter(config) {
 class CyberbossApp {
   constructor(config) {
     this.config = config;
+    // 脉：他的身体。每轮用户消息喂它一次，注入行和思考链标签都从它读
+    this.pulseEngine = getPulseEngine(config);
     this.channelAdapter = createChannelAdapter(config);
     this.timelineIntegration = createTimelineIntegration(config);
     const projectTooling = createProjectTooling(config, {
@@ -510,11 +513,23 @@ class CyberbossApp {
       runtimeAdapter: this.runtimeAdapter,
       model,
     });
+    // 身体先于语言：她的话先过一遍脉（情绪/五感/底色），再把此刻的
+    // 生命体征作为一行注进轮次。他收到的是数字，怎么反应是他的事。
+    let pulseLine = "";
+    if (this.pulseEngine) {
+      try {
+        this.pulseEngine.observeUserText(prepared?.originalText ?? prepared?.text);
+        pulseLine = this.pulseEngine.vitalsLine();
+      } catch (error) {
+        console.error(`[pulse] observe failed: ${formatErrorMessage(error)}`);
+      }
+    }
     return {
       text: assembleRuntimeTurnText({
         prepared,
         config: this.config,
         visionContext,
+        pulseLine,
       }),
       attachments: Array.isArray(visionContext.runtimeAttachments) ? visionContext.runtimeAttachments : [],
       visionContext,

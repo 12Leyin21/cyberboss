@@ -44,7 +44,7 @@ function buildMergedInboundPrepared({
   };
 }
 
-function assembleRuntimeTurnText({ prepared, config = {}, visionContext = {} }) {
+function assembleRuntimeTurnText({ prepared, config = {}, visionContext = {}, pulseLine = "" }) {
   const lines = [];
   const localTime = formatWechatLocalTime(prepared?.receivedAt);
   const originalText = normalizeText(prepared?.originalText ?? prepared?.text);
@@ -56,6 +56,10 @@ function assembleRuntimeTurnText({ prepared, config = {}, visionContext = {} }) 
 
   if (localTime) {
     lines.push(`[${localTime}]`);
+  }
+  // 脉：此刻的生命体征，跟时间一样是环境事实。收到的是数字，提不提随他
+  if (pulseLine) {
+    lines.push(pulseLine);
   }
   if (originalText) {
     if (lines.length) {

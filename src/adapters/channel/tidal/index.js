@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { createWeixinChannelAdapter, chunkReplyTextForWeixin } = require("../weixin");
+const { tryGetPulseEngine } = require("../../../services/pulse");
 
 // Tidal_Echo relay channel: lets the same brain serve the HeartTide phone app
 // alongside WeChat. Enabled only when both env vars are present:
@@ -297,9 +298,12 @@ function createTidalClient(env, config) {
       // 小总结走 meta.summary 单独一个字段，App 拿它渲染贴着头像那一行。
       const isTool = kind === "tool";
       const content = isTool ? stripLeadingLine(clipped, toolName) : clipped;
+      // 2026-08-06：情绪系统（脉）挂上来了。有立场时贴情绪标签
+      // （「心疼地想」），身体平静时退回首句摘要——标签不硬凑。
+      const pulseLabel = isTool ? null : tryGetPulseEngine()?.thinkingLabel();
       const summary = isTool
         ? `用了 ${toolName || "工具"}`
-        : summarizeThinking(clipped);
+        : (pulseLabel || summarizeThinking(clipped));
       const response = await fetch(`${env.url}/channel/out`, {
         method: "POST",
         headers: authHeaders({ "Content-Type": "application/json" }),

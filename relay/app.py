@@ -2395,6 +2395,22 @@ async def get_phone_weather(request: Request):
     return _last_weather or read_phone_weather() or fetch_legacy("/phone/weather") or {}
 
 
+# 脉 · 他的身体。Node 侧的引擎把快照写在中继目录，这里原样端出去——
+# 数值的算法只有一份（在 Node），Python 不重算，只当传菜的。
+PULSE_SNAPSHOT = Path(os.environ.get("RELAY_PULSE_SNAPSHOT",
+                                     str(Path(DB_PATH).parent / "pulse_snapshot.json")))
+
+
+@app.get("/pulse/status")
+async def pulse_status(request: Request):
+    """Current body reading: heart rate, temperature, breathing, chord, residues."""
+    check_auth(request)
+    try:
+        return json.loads(PULSE_SNAPSHOT.read_text(encoding="utf-8"))
+    except Exception:
+        return {"ok": False}
+
+
 @app.post("/app/ping")
 async def app_ping(request: Request):
     """PWA foreground heartbeat."""
