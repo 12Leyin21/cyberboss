@@ -98,7 +98,16 @@ function describeWake(verdict) {
   if (verdict.last_app && !alreadySaid && mins !== null && mins !== undefined && mins <= 30) {
     doing = `她 ${mins} 分钟前打开了${verdict.last_app}。`;
   }
-  return `（${verdict.reasons.join(" ")}${doing}她那边现在 ${verdict.her_local_hour} 点，${ring}。` +
+  // 共读书房：她今天读书了就顺手告诉他——正在读和读过是两种语气
+  let readingNote = "";
+  const reading = verdict.reading;
+  if (reading?.book_title && reading.today_minutes >= 1) {
+    const where = reading.chapter_title ? `「${reading.chapter_title}」` : "";
+    readingNote = reading.minutes_ago <= 5
+      ? `她此刻正在读《${reading.book_title}》${where}，今天已读 ${reading.today_minutes} 分钟。`
+      : `她今天读了 ${reading.today_minutes} 分钟《${reading.book_title}》${where ? `，停在${where}` : ""}。`;
+  }
+  return `（${verdict.reasons.join(" ")}${doing}${readingNote}她那边现在 ${verdict.her_local_hour} 点，${ring}。` +
     `要不要找她、用什么方式找、说什么，你自己定——这只是把我看到的告诉你，不是让你复述。）`;
 }
 

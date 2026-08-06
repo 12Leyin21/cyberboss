@@ -247,6 +247,35 @@ def init_db() -> None:
             )
             """
         )
+        # 共读书房（2026-08-06，取经 EnhydrInk/tasogare）：两个人的笔迹落在
+        # 同一页书上。书的正文在她手机里（本地永存），这里只存**笔迹和时长**——
+        # 划线（quote 是锚，App 按它在章节里找位置渲染双色）、批注、每天读了多久。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS book_marks (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts            TEXT NOT NULL,
+                book_title    TEXT NOT NULL,
+                chapter_index INTEGER NOT NULL DEFAULT -1,
+                chapter_title TEXT NOT NULL DEFAULT '',
+                author        TEXT NOT NULL,              -- 灵兮 | 沐沐
+                quote         TEXT NOT NULL DEFAULT '',   -- 划的原文，页面渲染的锚
+                note          TEXT NOT NULL DEFAULT ''    -- 想法；空 = 纯划线
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS book_reading (
+                day           TEXT NOT NULL,              -- 珀斯日期 YYYY-MM-DD
+                book_title    TEXT NOT NULL,
+                seconds       INTEGER NOT NULL DEFAULT 0,
+                chapter_title TEXT NOT NULL DEFAULT '',
+                updated       TEXT NOT NULL,
+                PRIMARY KEY (day, book_title)
+            )
+            """
+        )
         # 2026-08-02: the first desk-log rows went in before pool_only existed,
         # so 心潮 rendered them as chat bubbles. Backfill once, idempotently.
         conn.execute(
@@ -1690,6 +1719,24 @@ def evaluate_wake() -> dict:
     if silent_minutes is not None and silent_minutes >= WAKE_SILENCE_MIN:
         signals.append(("long_silence", f"她已经 {silent_minutes // 60} 小时没说话了。"))
 
+    # 共读书房的动静：她今天读没读书、此刻是不是正翻着。只当情报不当门票。
+    reading = None
+    try:
+        with db() as conn:
+            row = conn.execute(
+                "SELECT * FROM book_reading WHERE day = ? ORDER BY updated DESC LIMIT 1",
+                (_perth_day(),)).fetchone()
+        if row:
+            updated = datetime.fromisoformat(row["updated"])
+            reading = {
+                "book_title": row["book_title"],
+                "chapter_title": row["chapter_title"],
+                "today_minutes": round(row["seconds"] / 60),
+                "minutes_ago": round((datetime.now(timezone.utc) - updated).total_seconds() / 60),
+            }
+    except Exception:
+        reading = None
+
     # 2026-08-01 第三版。前两版都把"要不要叫醒他"跟"有没有值得说的事"绑在了
     # 一起，做出来比原版那个纯随机 checkin **还严**——原来他每三四十分钟就有
     # 一次机会问她在干嘛，我改完他得先"够格"。灵兮说：
@@ -1732,6 +1779,7 @@ def evaluate_wake() -> dict:
         # 夜巡窗口：0–5 点轮询器改成 1~2 分钟一趟小步巡逻（学 always-here 的
         # 事件响应速度），白天恢复正常大步。判断在这边，脚在 Node 那边。
         "night_watch": 0 <= hour < 5,
+        "reading": reading,
         "health_age_hours": round(age_hours, 1) if age_hours is not None else None,
         "health_fresh": fresh,
         "can_ring": bark_enabled() and not bark_dnd() and not in_quiet_hours()
@@ -2483,6 +2531,104 @@ async def pulse_status(request: Request):
         return json.loads(PULSE_SNAPSHOT.read_text(encoding="utf-8"))
     except Exception:
         return {"ok": False}
+
+
+# ── 共读书房（2026-08-06，取经 EnhydrInk/tasogare）──────────────────────────
+# 书的正文永远在她手机里；这里是书桌——两个人的划线、批注和阅读时长落在这。
+
+
+def _perth_day() -> str:
+    return (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%d")
+
+
+@app.post("/books/mark")
+async def add_book_mark(request: Request):
+    """一笔落纸：划线（只有 quote）或批注（quote + note）。author 区分笔迹颜色。"""
+    check_auth(request)
+    body = await request.json()
+    quote = str(body.get("quote") or "").strip()[:500]
+    note = str(body.get("note") or "").strip()[:2000]
+    if not quote and not note:
+        raise HTTPException(status_code=400, detail="empty mark")
+    author = str(body.get("author") or "").strip() or HUMAN_NAME
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO book_marks (ts, book_title, chapter_index, chapter_title, author, quote, note) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (now_iso(), str(body.get("book_title") or "")[:200],
+             int(body.get("chapter_index") or -1),
+             str(body.get("chapter_title") or "")[:200], author, quote, note))
+        conn.commit()
+        return {"ok": True, "id": cur.lastrowid}
+
+
+@app.get("/books/marks")
+async def list_book_marks(request: Request, book_title: str = "",
+                          since_id: int = 0, limit: int = 200):
+    """增量拉笔迹：App 用 since_id 只取新的，别整本重拉（带宽是真钱）。"""
+    check_auth(request)
+    limit = max(1, min(int(limit), 500))
+    sql = "SELECT * FROM book_marks WHERE id > ?"
+    args: list = [int(since_id)]
+    if book_title:
+        sql += " AND book_title = ?"
+        args.append(book_title)
+    sql += " ORDER BY id ASC LIMIT ?"
+    args.append(limit)
+    with db() as conn:
+        rows = [dict(r) for r in conn.execute(sql, args).fetchall()]
+    return {"ok": True, "marks": rows}
+
+
+@app.post("/books/reading")
+async def report_reading(request: Request):
+    """阅读器开着时每 60 秒来报一次。按珀斯日期累加，一天一本一行。"""
+    check_auth(request)
+    body = await request.json()
+    title = str(body.get("book_title") or "").strip()[:200]
+    seconds = max(0, min(int(body.get("seconds") or 0), 600))
+    chapter = str(body.get("chapter_title") or "")[:200]
+    if not title or seconds <= 0:
+        return {"ok": True}
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO book_reading (day, book_title, seconds, chapter_title, updated) "
+            "VALUES (?,?,?,?,?) "
+            "ON CONFLICT(day, book_title) DO UPDATE SET "
+            "seconds = seconds + excluded.seconds, "
+            "chapter_title = excluded.chapter_title, updated = excluded.updated",
+            (_perth_day(), title, seconds, chapter, now_iso()))
+        conn.commit()
+    return {"ok": True}
+
+
+@app.get("/books/reading_status")
+async def reading_status(request: Request):
+    """今天读了多久、在读哪本读到哪、最近的笔迹——沐沐追进度用这个。"""
+    check_auth(request)
+    with db() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM book_reading WHERE day = ? ORDER BY updated DESC",
+            (_perth_day(),)).fetchall()]
+        recent = [dict(r) for r in conn.execute(
+            "SELECT * FROM book_marks ORDER BY id DESC LIMIT 5").fetchall()]
+    total_min = round(sum(r["seconds"] for r in rows) / 60)
+    current = rows[0] if rows else None
+    reading_now = False
+    if current:
+        try:
+            updated = datetime.fromisoformat(current["updated"])
+            reading_now = (datetime.now(timezone.utc) - updated).total_seconds() <= 180
+        except Exception:
+            pass
+    return {
+        "ok": True,
+        "today_minutes": total_min,
+        "reading_now": reading_now,
+        "book_title": current["book_title"] if current else None,
+        "chapter_title": current["chapter_title"] if current else None,
+        "recent_marks": recent,
+    }
 
 
 @app.post("/app/ping")
