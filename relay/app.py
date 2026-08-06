@@ -998,6 +998,71 @@ def save_upload_bytes(data: bytes, name: str, mime: str, prefix: str = "att") ->
     }
 
 
+# ── 服务器端语音识别（2026-08-06，取经 29-Cu/voce）──────────────────────────
+# 她手机本地的识别经常错字；voce 的答案是把识别搬上服务器。识别链按序尝试：
+# ① SiliconFlow 的 SenseVoice（voce/callhome 同款引擎，中文最好，配 SILICONFLOW_API_KEY 启用）
+# ② ElevenLabs scribe（TTS 的 key 现成就能用）
+# ③ 老的本地命令钩子
+SILICONFLOW_API_KEY = os.environ.get("SILICONFLOW_API_KEY", "")
+
+
+def _multipart_body(fields: dict, file_field: str, filename: str,
+                    file_bytes: bytes, file_mime: str) -> tuple[bytes, str]:
+    boundary = secrets.token_hex(16)
+    lines: list[str] = []
+    for key, value in fields.items():
+        lines += [f"--{boundary}", f'Content-Disposition: form-data; name="{key}"', "", str(value)]
+    lines += [f"--{boundary}",
+              f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"',
+              f"Content-Type: {file_mime}", ""]
+    head = ("\r\n".join(lines) + "\r\n").encode("utf-8")
+    tail = f"\r\n--{boundary}--\r\n".encode("utf-8")
+    return head + file_bytes + tail, f"multipart/form-data; boundary={boundary}"
+
+
+def _stt_via_siliconflow(audio_path: Path, mime: str) -> str:
+    if not SILICONFLOW_API_KEY:
+        return ""
+    try:
+        body, ctype = _multipart_body({"model": "FunAudioLLM/SenseVoiceSmall"}, "file",
+                                      audio_path.name, audio_path.read_bytes(), mime or "audio/webm")
+        req = urllib.request.Request(
+            "https://api.siliconflow.cn/v1/audio/transcriptions", data=body,
+            headers={"Authorization": f"Bearer {SILICONFLOW_API_KEY}", "Content-Type": ctype},
+            method="POST")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            out = json.loads(resp.read())
+        return str(out.get("text") or "").strip()
+    except Exception as exc:
+        print(f"[stt] siliconflow failed: {exc}")
+        return ""
+
+
+def _stt_via_elevenlabs(audio_path: Path, mime: str) -> str:
+    if not ELEVENLABS_API_KEY:
+        return ""
+    try:
+        body, ctype = _multipart_body({"model_id": "scribe_v1"}, "file",
+                                      audio_path.name, audio_path.read_bytes(), mime or "audio/webm")
+        req = urllib.request.Request(
+            "https://api.elevenlabs.io/v1/speech-to-text", data=body,
+            headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": ctype},
+            method="POST")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            out = json.loads(resp.read())
+        return str(out.get("text") or "").strip()
+    except Exception as exc:
+        print(f"[stt] elevenlabs failed: {exc}")
+        return ""
+
+
+def transcribe_audio(audio_path: Path, mime: str) -> str:
+    """服务器端识别总入口：SenseVoice → scribe → 本地钩子，谁先给出结果用谁。"""
+    return (_stt_via_siliconflow(audio_path, mime)
+            or _stt_via_elevenlabs(audio_path, mime)
+            or transcribe_with_command(audio_path, mime))
+
+
 def transcribe_with_command(audio_path: Path, mime: str) -> str:
     """Optional local ASR hook. The command receives <audio_path> <mime> and prints a transcript."""
     if not VOICE_TRANSCRIBE_CMD:
@@ -1296,6 +1361,26 @@ async def channel_out(request: Request):
         # header doesn't stay stuck typing when no reply follows.
         await broadcast(app_subs, {"type": "typing", "active": False})
         return {"id": target_id, "reactions": reactions}
+    if kind == "voice":
+        # 沐沐的语音条（2026-08-06 灵兮点的）：他自己选择"这句想说出声"。
+        # text → TTS（ElevenLabs 优先）→ 音频落盘 → kind=voice 消息，
+        # App 把它渲染成他那侧的可点播语音条，正文就是逐字稿。
+        spoken = str(body.get("text") or "").strip()
+        if not spoken:
+            raise HTTPException(status_code=400, detail="voice: empty text")
+        if ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
+            audio = elevenlabs_tts_mp3(spoken)
+        else:
+            audio = minimax_tts_mp3(spoken)
+        upload = save_upload_bytes(audio, f"mu-voice-{int(time.time())}.mp3", "audio/mpeg", "voice")
+        voice_meta = {"voice": True, "tts": True, "attachments": [upload], "channel": "心潮"}
+        voice_msg = save_message("out", "voice", f"🎤 {spoken}", voice_meta)
+        await broadcast(app_subs, {"type": "typing", "active": False})
+        await broadcast(app_subs, app_payload(voice_msg))
+        if not app_subs:
+            await notify_all(voice_msg)   # 语音条也算真回复，她不在线要推一下
+        return {"id": voice_msg["id"], "attachment": upload}
+
     text = body.get("text", "")
     # 五子棋拦截：回复里带落子坐标且轮到 AI → 裁判应用；非法落子直接 400 让 AI 重下
     if kind == "reply":
@@ -2379,7 +2464,7 @@ async def app_voice(request: Request):
     upload = save_upload_bytes(data, request.query_params.get("name", "voice.webm"), mime, "voice")
     stored = Path(upload["url"]).name
     local_audio = UPLOAD_DIR / stored
-    transcript = transcribe_with_command(local_audio, mime)
+    transcript = transcribe_audio(local_audio, mime)
     text = ("🎤 " + transcript) if transcript else f"🎤 [语音] {HUMAN_NAME}发来一段语音；当前 relay 未配置 ASR，音频已作为附件送达。"
     meta = {
         "user": "human",
