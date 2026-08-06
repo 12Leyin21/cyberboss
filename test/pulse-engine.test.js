@@ -138,6 +138,38 @@ test("被哄机制：负面底色加速代谢 + 垫浅暖", () => {
   }
 });
 
+test("身体事件池：情绪触发时抽词条，注入行只出一次", () => {
+  const config = createConfig();
+  // 种子池在 workspace——测试里指过去
+  const engine = new PulseEngine({
+    ...config,
+    workspaceRoot: require("path").join(__dirname, "..", "cyberboss-workspace-main"),
+  });
+  try {
+    engine.observeUserText("讨厌你，走开");
+    assert.ok(engine.state.murmur?.text, "情绪触发应抽到身体事件");
+    const first = engine.vitalsLine();
+    assert.match(first, /〔.+〕/, "第一次注入应带身体事件行");
+    const second = engine.vitalsLine();
+    assert.ok(!/〔/.test(second), "同一条身体事件不许出第二次");
+  } finally {
+    engine.close();
+  }
+});
+
+test("身体事件池：最近用过的不重复", () => {
+  const { loadPools, pickMurmur } = require("../src/services/pulse/pool");
+  const entries = loadPools([require("path").join(__dirname, "..", "cyberboss-workspace-main", "pulse-pool.json")]);
+  assert.ok(entries.length >= 50, `种子池该有货，实得 ${entries.length}`);
+  const recent = [];
+  for (let i = 0; i < 5; i += 1) {
+    const text = pickMurmur(entries, "intimate", recent);
+    assert.ok(text, "intimate 池不该抽空");
+    assert.ok(!recent.includes(text), "不该重复最近用过的");
+    recent.push(text);
+  }
+});
+
 test("身体平静时标签退回 null（外面用首句摘要兜底）", () => {
   const config = createConfig();
   const engine = new PulseEngine(config);

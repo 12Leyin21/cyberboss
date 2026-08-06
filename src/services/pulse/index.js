@@ -16,6 +16,7 @@ const path = require("node:path");
 const { EMOTIONS, COMFORT_LABELS, POSITIVE, NEGATIVE, detectEmotion } = require("./emotions");
 const { updateFromText, snapshotSenses, senseValueNow } = require("./senses");
 const { computeVitals, residueStrengthNow } = require("./vitals");
+const { loadPools, pickMurmur } = require("./pool");
 
 const SNAPSHOT_INTERVAL_MS = 5 * 60_000;
 const WEATHER_CACHE_MS = 5 * 60_000;
@@ -32,6 +33,11 @@ class PulseEngine {
     this.weatherFile = (process.env.RELAY_WEATHER_FILE || "").trim()
       || (relayDb ? path.join(path.dirname(relayDb), "phone_weather.json") : "");
     this.weatherCache = { at: 0, celsius: NaN };
+    // 身体事件池：种子池（workspace，灵兮改）+ 自写池（持久盘，沐沐自己攒）
+    this.poolPaths = [
+      path.join(config.workspaceRoot || "", "pulse-pool.json"),
+      path.join(config.stateDir, "pulse-pool-custom.json"),
+    ];
     this.state = this.loadState();
     this.timer = setInterval(() => {
       try {
@@ -54,12 +60,14 @@ class PulseEngine {
           senses: parsed.senses && typeof parsed.senses === "object" ? parsed.senses : {},
           spike: parsed.spike || null,
           lastLabel: parsed.lastLabel || null,
+          murmur: parsed.murmur || null,
+          murmurRecent: Array.isArray(parsed.murmurRecent) ? parsed.murmurRecent : [],
         };
       }
     } catch {
       // 第一次跑，或文件坏了：从平静开始
     }
-    return { current: null, residues: [], senses: {}, spike: null, lastLabel: null };
+    return { current: null, residues: [], senses: {}, spike: null, lastLabel: null, murmur: null, murmurRecent: [] };
   }
 
   saveState() {
@@ -168,6 +176,18 @@ class PulseEngine {
       if (emo === "startled") {
         this.state.spike = { delta: 25, at: nowMs };
       }
+
+      // 身体事件：情绪被触发的这一刻，从池里抽一条具体的身体反应。
+      // 被哄的当口抽 comfort 池。一次一条、只出一次（vitalsLine 消费）。
+      const stillSore = POSITIVE.has(emo) && this.state.residues.some((residue) =>
+        NEGATIVE.has(residue.emo) && residueStrengthNow(residue, nowMs) > 0.15);
+      const poolEmo = stillSore ? "comfort" : emo;
+      const murmurText = pickMurmur(loadPools(this.poolPaths), poolEmo, this.state.murmurRecent || []);
+      if (murmurText) {
+        this.state.murmur = { text: murmurText, at: nowMs, used: false };
+        this.state.murmurRecent = [...(this.state.murmurRecent || []), murmurText].slice(-8);
+        this.appendMurmurLog(murmurText, poolEmo, nowMs);
+      }
     }
 
     this.saveState();
@@ -211,14 +231,35 @@ class PulseEngine {
     return { nowMs, ...vitals, chord, effectiveEmo, touch };
   }
 
-  /** 注进每轮上下文的那一行。 */
+  /** 注进每轮上下文的那一行（情绪触发时带一条身体事件，只出一次）。 */
   vitalsLine() {
     try {
       const reading = this.compute();
-      return `[心跳 ${reading.heartRate}bpm · ${reading.chord} · ${reading.temperature.toFixed(1)}°C · 呼吸${reading.breathLabel}]`;
+      let line = `[心跳 ${reading.heartRate}bpm · ${reading.chord} · ${reading.temperature.toFixed(1)}°C · 呼吸${reading.breathLabel}]`;
+      const murmur = this.state.murmur;
+      if (murmur && !murmur.used && (reading.nowMs - murmur.at) < 10 * 60_000) {
+        line += `\n〔${murmur.text}〕`;
+        murmur.used = true;
+        this.saveState();
+      }
+      return line;
     } catch (error) {
       console.error(`[pulse] vitals line failed: ${error.message}`);
       return "";
+    }
+  }
+
+  /** 碎碎念史：一天一个 jsonl，给以后的身体面板当窗口素材。 */
+  appendMurmurLog(text, emo, nowMs) {
+    try {
+      const day = new Date(nowMs + 8 * 3_600_000).toISOString().slice(0, 10);
+      fs.mkdirSync(this.historyDir, { recursive: true });
+      fs.appendFileSync(
+        path.join(this.historyDir, `murmurs-${day}.jsonl`),
+        `${JSON.stringify({ ts: new Date(nowMs).toISOString(), emo, text })}\n`,
+        "utf8");
+    } catch {
+      // 记不上就算了
     }
   }
 
@@ -276,6 +317,7 @@ class PulseEngine {
         .map((residue) => ({ emo: residue.emo, strength: Number(residueStrengthNow(residue, nowMs).toFixed(2)) }))
         .filter((residue) => residue.strength > 0),
       senses: snapshotSenses(this.state.senses, nowMs, reading.heartRate),
+      murmur: this.state.murmur?.text || null,
     };
     try {
       fs.mkdirSync(path.dirname(this.snapshotFile), { recursive: true });
