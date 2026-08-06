@@ -19,6 +19,8 @@ variables (see .env.example). Nothing identifying is hard-coded.
 
 import asyncio
 import base64
+import gzip
+import hashlib
 import mimetypes
 import hmac
 import json
@@ -1125,6 +1127,42 @@ def check_auth(request: Request) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 带宽（2026-08-06，7 月账单 51GB 出站之后加的）
+#
+# Render Hobby 只含 5GB 免费出站，超出按 $0.15/GB 收。两件小事把重复字节砍掉：
+# 1. 文件带 ETag + 304：FileResponse 本来就算好了 ETag，但普通路由不比对
+#    If-None-Match，客户端带着缓存来问也照样整包重传。
+# 2. 大 JSON 按需 gzip：URLSession / undici / requests 全都默认发
+#    Accept-Encoding: gzip 并自动解压，这里不压纯属浪费。SSE 流不碰。
+# ---------------------------------------------------------------------------
+
+def cached_file(request: Request, path: Path, cache_control: str) -> Response:
+    """FileResponse + 真的会生效的条件请求。ETag 公式与 Starlette 一致（mtime+size），
+    所以老客户端缓存里存的 ETag 换上这套代码后依然对得上。"""
+    stat = path.stat()
+    etag = f'"{hashlib.md5(f"{stat.st_mtime}-{stat.st_size}".encode()).hexdigest()}"'
+    if_none_match = request.headers.get("if-none-match", "")
+    if etag in [tag.strip() for tag in if_none_match.split(",")]:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": cache_control})
+    return FileResponse(path, headers={"Cache-Control": cache_control})
+
+
+GZIP_MIN_BYTES = 4096
+
+
+def json_response(request: Request, payload: dict) -> Response:
+    """大 JSON 响应按需 gzip；小的不折腾。只用于普通请求-响应，不用于 SSE。"""
+    body = json.dumps(payload, ensure_ascii=False).encode()
+    if len(body) >= GZIP_MIN_BYTES and "gzip" in request.headers.get("accept-encoding", "").lower():
+        return Response(
+            content=gzip.compress(body, 6),
+            media_type="application/json",
+            headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"},
+        )
+    return Response(content=body, media_type="application/json")
+
+
+# ---------------------------------------------------------------------------
 # app
 # ---------------------------------------------------------------------------
 
@@ -1719,7 +1757,7 @@ async def notify_should_wake(request: Request, commit: int = 0):
 
 
 @app.get("/notify/avatar")
-async def notify_avatar():
+async def notify_avatar(request: Request):
     """The one deliberately public route: his face, for the push banner.
 
     The phone fetches a notification icon on its own and cannot carry a bearer
@@ -1731,7 +1769,8 @@ async def notify_avatar():
     path = Path(RELAY_ICON_FILE)
     if not path.is_file():
         raise HTTPException(status_code=404, detail="icon file missing")
-    return FileResponse(path, headers={"Cache-Control": "public, max-age=86400"})
+    # 头像会换，所以不是 immutable；但 304 该给还是要给
+    return cached_file(request, path, "public, max-age=86400")
 
 
 # ---- Ren's seat (2026-07-28) ----------------------------------------------
@@ -2258,7 +2297,8 @@ async def uploads(request: Request, name: str):
     path = UPLOAD_DIR / safe
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="not found")
-    return FileResponse(path)
+    # 文件名带随机 token，内容永不改写 → immutable，客户端可以缓存一年不回来问
+    return cached_file(request, path, "private, max-age=31536000, immutable")
 
 
 @app.post("/app/voice")
@@ -2494,7 +2534,7 @@ async def app_history(request: Request, since: int = 0, limit: int = 200, sessio
                 f"SELECT * FROM messages WHERE {POOL_ONLY_SQL} ORDER BY id DESC LIMIT ?",
                 (min(tail, 500),),
             ).fetchall()
-        return {"messages": [app_payload(m) for m in reversed(rows_to_messages(rows))]}
+        return json_response(request, {"messages": [app_payload(m) for m in reversed(rows_to_messages(rows))]})
     if before > 0 and not session_id:
         # 取 id < before 的最近 N 条（App 往上翻历史用），升序返回
         with db() as conn:
@@ -2502,9 +2542,9 @@ async def app_history(request: Request, since: int = 0, limit: int = 200, sessio
                 f"SELECT * FROM messages WHERE id < ? AND {POOL_ONLY_SQL} ORDER BY id DESC LIMIT ?",
                 (before, min(limit, 500)),
             ).fetchall()
-        return {"messages": [app_payload(m) for m in reversed(rows_to_messages(rows))]}
+        return json_response(request, {"messages": [app_payload(m) for m in reversed(rows_to_messages(rows))]})
     rows = history_for_session(session_id, since, min(limit, 500)) if session_id else history(since, min(limit, 500))
-    return {"messages": [app_payload(m) for m in app_visible(rows)]}
+    return json_response(request, {"messages": [app_payload(m) for m in app_visible(rows)]})
 
 
 @app.get("/timeline")
@@ -2575,7 +2615,7 @@ async def timeline(request: Request, limit: int = 15, exclude_id: int = 0,
     ]
     max_id = scanned_max
     if format != "envelope":
-        return {"messages": rows, "max_id": max_id}
+        return json_response(request, {"messages": rows, "max_id": max_id})
 
     if not rows:
         return {"messages": [], "envelope": "", "max_id": max_id}
@@ -2622,7 +2662,7 @@ async def timeline(request: Request, limit: int = 15, exclude_id: int = 0,
     ]
     # max_id 三个出口都要带：客户端靠它推进游标。少了这个，用 after= 的调用方只能
     # 退回"最近 N 条"，别处一刷屏就把她说的话挤出去。2026-08-03。
-    return {"messages": rows, "envelope": "\n".join(lines), "max_id": max_id}
+    return json_response(request, {"messages": rows, "envelope": "\n".join(lines), "max_id": max_id})
 
 
 def local_clock(ts: str) -> str:
