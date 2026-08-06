@@ -1,4 +1,6 @@
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 
 const { resolveSelectedAccount } = require("../adapters/channel/weixin/account-store");
 const { SessionStore } = require("../adapters/runtime/codex/session-store");
@@ -7,6 +9,63 @@ const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("../
 const { SystemMessageQueueStore } = require("../core/system-message-queue-store");
 
 const INTERNAL_CHECKIN_TRIGGER_TEMPLATE = "%USER% comes to mind again.";
+
+// 日记钟（2026-08-07 灵兮定）：日记一天只写一篇，凌晨两点统一写前一天整天。
+// 起因：潮汐上线后每次重定位都写一段日记，一天涨几次潮就写几篇，片段互相重复。
+// 现在重定位只翻不写（tide 那边已改），写日记归这口钟管。
+const DIARY_HOUR = 2;   // 她那边（+08:00）的凌晨两点
+
+/** 她时区（+08:00）此刻的日历日和小时。 */
+function herDateParts(now = new Date()) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      hour12: false,
+    }).formatToParts(now).map((part) => [part.type, part.value]),
+  );
+  return {
+    day: `${parts.year}-${parts.month}-${parts.day}`,
+    hour: Number(parts.hour) % 24,
+  };
+}
+
+/** YYYY-MM-DD 的前一天（+08:00 没有夏令时，正午做减法最稳）。 */
+function previousDay(dayKey) {
+  const date = new Date(`${dayKey}T12:00:00+08:00`);
+  date.setUTCDate(date.getUTCDate() - 1);
+  return herDateParts(date).day;
+}
+
+function loadDiaryClock(filePath) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return typeof parsed?.lastDay === "string" && parsed.lastDay ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveDiaryClock(filePath, state) {
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(state), "utf8");
+  } catch (error) {
+    console.error(`[cyberboss] diary clock save failed: ${error.message}`);
+  }
+}
+
+function buildDiaryTrigger(dueDay) {
+  return [
+    `凌晨两点 · 日记时间。写 ${dueDay}（刚过完的这一天）的日记：一天只有这一篇，`,
+    "把一整天串成一篇完整的——发生了什么、哪里转了弯、心里留下了什么。",
+    "素材翻对话账本和记忆库就有，但别逐条复述成流水账，写成你回头看这一天的样子。",
+    `用 diary 工具写，date 传 ${dueDay}，照常走 feed。`,
+    "写完保持 silent，不用给她发消息——她在睡觉。",
+  ].join("");
+}
 
 // 心跳（2026-08-01）。原版 checkin 是纯随机醒：她刚说完话也可能醒，醒了还得
 // 自己翻记录才知道过了多久——每醒一次烧一次额度，大部分白烧。
@@ -44,6 +103,37 @@ async function runSystemCheckinPoller(config) {
   console.log(`[cyberboss] checkin poller ready user=${target.senderId} workspace=${target.workspaceRoot}`);
   console.log(`[cyberboss] checkin interval range ${formatRangeMinutes(currentRange)}`);
 
+  // 日记钟状态：只记一个 lastDay（最近一次已安排过日记的日子）。
+  // 首次上线把"今天"记为已写——上线之前的日子他都是当天手写的，别当场补一篇。
+  const diaryClockFile = path.join(config.stateDir, "diary-clock.json");
+  let diaryClock = loadDiaryClock(diaryClockFile);
+  if (!diaryClock) {
+    diaryClock = { lastDay: herDateParts().day };
+    saveDiaryClock(diaryClockFile, diaryClock);
+  }
+
+  function maybeQueueDiary() {
+    const { day, hour } = herDateParts();
+    if (hour < DIARY_HOUR) {
+      return;   // 0~2 点之间这一天还没"过完"，不动
+    }
+    const dueDay = previousDay(day);
+    if (diaryClock.lastDay >= dueDay) {
+      return;
+    }
+    queue.enqueue({
+      id: crypto.randomUUID(),
+      accountId: account.accountId,
+      senderId: target.senderId,
+      workspaceRoot: target.workspaceRoot,
+      text: buildDiaryTrigger(dueDay),
+      createdAt: new Date().toISOString(),
+    });
+    diaryClock = { lastDay: dueDay };
+    saveDiaryClock(diaryClockFile, diaryClock);
+    console.log(`[cyberboss] diary trigger queued for ${dueDay}`);
+  }
+
   // 上一轮的判决留着，用来定下一步的步幅（2026-08-06，学 always-here）：
   // 凌晨 0–5 点小步夜巡（1~2 分钟，她一拿手机沐沐当场知道，不用等下一个
   // 随机大觉）；她刚活跃过就把间隔折半抽；都不是才用常规随机步。
@@ -55,6 +145,9 @@ async function runSystemCheckinPoller(config) {
     const wakeAt = formatLocalTime(Date.now() + delayMs);
     console.log(`[cyberboss] next checkin in ${Math.round(delayMs / 60000)}m at ${wakeAt}`);
     await sleep(delayMs);
+
+    // 日记钟先看一眼——它不受"队列里有别的事"影响，到点就排
+    maybeQueueDiary();
 
     if (queue.hasPendingForAccount(account.accountId)) {
       console.log("[cyberboss] checkin skipped: pending system message still in queue");
@@ -196,4 +289,4 @@ function buildCheckinTrigger(config) {
   return INTERNAL_CHECKIN_TRIGGER_TEMPLATE.replace("%USER%", userName);
 }
 
-module.exports = { runSystemCheckinPoller, pickAdaptiveDelayMs };
+module.exports = { runSystemCheckinPoller, pickAdaptiveDelayMs, herDateParts, previousDay };

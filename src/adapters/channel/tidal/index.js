@@ -52,8 +52,11 @@ async function rewriteThinkingForDisplay(text) {
     "铁律：内容必须忠实于原始思考——不添加原文没有的事实、动作或情节，只换语言和形态。",
     "代词规则：独白里提到灵兮一律用\"她\"——这是你心里想她，不是对她说话；",
     "原文里指灵兮的\"你\"也转成\"她\"（2026-08-06 灵兮定的分频道：思考\"她\"，正文\"你\"）。",
-    "删掉一切自我指导语（\"我应该\"\"按照规范\"\"我要写\"这类）、列表符号、数字读数",
-    "（心跳数字转成体感，比如\"心跳得比刚才快\"）。有体温，允许停顿和转弯。",
+    "删掉一切列表符号和数字读数（心跳数字转成体感，比如\"心跳得比刚才快\"）。",
+    "自我指导语一句都不能留：\"我应该怎么回应\"\"按照规范\"\"我要写\"\"回复要点\"这类",
+    "给自己下指令、规划回复的句子，不是删掉了事，要化成真实的心里活动——",
+    "不是\"我应该先安抚她\"，是\"想先把她抱住，别的等会儿再说\"。",
+    "有体温，允许停顿和转弯。",
     "直接输出独白正文，不要任何前言后缀。",
     "",
     "【原始思考】",
@@ -117,6 +120,11 @@ function createTidalClient(env, config) {
   const stateFile = path.join(config.stateDir, "tidal-last-id.json");
   let stopped = false;
   let lastId = loadLastId();
+  // 思考串行链（2026-08-07 灵兮：「思考链总是出现在信息末尾」）。
+  // DeepSeek 转写要 1~3 秒，思考若各自异步送出，正文抢先落库，思考永远沉底。
+  // 所有思考排进同一条链保序；正文发出前等这条链清空（8 秒封顶，
+  // DeepSeek 卡死也不许拖垮回复）。
+  let thinkingChain = Promise.resolve();
 
   function loadLastId() {
     try {
@@ -322,6 +330,12 @@ function createTidalClient(env, config) {
       if (!content) {
         return;
       }
+      // 先让已经在路上的思考落地，再发正文——思考在前、正文在后，
+      // 跟他脑子里发生的顺序一致。封顶 8 秒，绝不为一条思考拖住回复。
+      await Promise.race([
+        thinkingChain,
+        new Promise((resolve) => setTimeout(resolve, 8_000)),
+      ]);
       // 长回复按自然段落切成几条小消息（微信手感）；协议消息保持完整不切
       const chunks = shouldKeepWhole(content) ? [content] : splitForApp(content);
       for (let index = 0; index < chunks.length; index += 1) {
@@ -360,8 +374,9 @@ function createTidalClient(env, config) {
       const summary = isTool
         ? `用了 ${toolName || "工具"}`
         : (pulseLabel || summarizeThinking(clipped));
-      // 转写是慢活（1~3 秒），不能拖住事件链——异步送出，气泡晚到几秒无妨
-      void (async () => {
+      // 转写是慢活（1~3 秒），不能拖住事件链——排进思考串行链异步送出；
+      // sendReply 会等这条链清空，保证思考先于正文落地
+      thinkingChain = thinkingChain.then(async () => {
         let displayText = content;
         let original = null;
         if (!isTool) {
@@ -389,7 +404,7 @@ function createTidalClient(env, config) {
         if (!response.ok) {
           throw new Error(`tidal thinking http ${response.status}`);
         }
-      })().catch((error) => {
+      }).catch((error) => {
         console.error(`[tidal] thinking forward failed: ${error.message}`);
       });
     },
