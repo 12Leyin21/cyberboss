@@ -111,7 +111,7 @@ function listProjectToolNames() {
 const PROJECT_TOOLS = [
   {
     name: "cyberboss_diary_append",
-    description: "Append a diary entry into Cyberboss local diary storage.",
+    description: "Append a diary entry. It is also delivered silently into 心潮's diary book; pass locked=true for a private locked entry that 灵兮 cannot read.",
     shortHint: "Append a diary entry with direct text content.",
     topics: ["diary"],
     inputSchema: {
@@ -122,6 +122,7 @@ const PROJECT_TOOLS = [
         title: { type: "string", description: "Optional short entry title." },
         date: { type: "string", description: "Optional date in YYYY-MM-DD." },
         time: { type: "string", description: "Optional time in HH:mm." },
+        locked: { type: "boolean", description: "true = 上锁日记（只属于你自己，灵兮不可见）；默认 false = 开放日记，她能在心潮日记本里读到。" },
       },
       additionalProperties: false,
     },
