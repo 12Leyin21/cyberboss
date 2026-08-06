@@ -80,6 +80,11 @@ function readConfig() {
     claudePermissionMode: readTextEnv("CYBERBOSS_CLAUDE_PERMISSION_MODE") || "default",
     claudeDisableVerbose: readBoolEnv("CYBERBOSS_CLAUDE_DISABLE_VERBOSE"),
     claudeExtraArgs: readListEnv("CYBERBOSS_CLAUDE_EXTRA_ARGS"),
+    // 人格系统提示词：这个文件整个走 --append-system-prompt-file 进 claude 的
+    // 系统提示词（睁眼第一页）。人格类规范（总纲/文风/思维链/NSFW）放这儿，
+    // 操作手册留在 CLAUDE.md——两处不重复，谁也不读两遍（2026-08-06 灵兮定）
+    claudePersonaFile: readTextEnv("CYBERBOSS_CLAUDE_PERSONA_FILE")
+      || path.join(readTextEnv("CYBERBOSS_WORKSPACE_ROOT") || process.cwd(), "persona-system.md"),
     sessionsFile: path.join(stateDir, "sessions.json"),
     startWithCheckin: (mode === "start" && hasArgFlag(argv, "--checkin")) || readBoolEnv("CYBERBOSS_ENABLE_CHECKIN"),
   };

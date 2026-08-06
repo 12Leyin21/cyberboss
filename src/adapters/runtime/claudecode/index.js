@@ -120,6 +120,7 @@ function createClaudeCodeRuntimeAdapter(config) {
       permissionMode: config.claudePermissionMode || "default",
       disableVerbose: Boolean(config.claudeDisableVerbose),
       extraArgs: config.claudeExtraArgs || [],
+      personaFile: config.claudePersonaFile || "",
       mcpConfigPaths: [projectSettings.configPath],
       ipcServer,
       workspaceRoot,

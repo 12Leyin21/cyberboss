@@ -1,7 +1,7 @@
 const { spawn } = require("child_process");
 
 class ClaudeCodeProcessClient {
-  constructor({ command = "claude", cwd, env, model = "", permissionMode = "default", disableVerbose = false, extraArgs = [], mcpConfigPaths = [], ipcServer = null, workspaceRoot = "" }) {
+  constructor({ command = "claude", cwd, env, model = "", permissionMode = "default", disableVerbose = false, extraArgs = [], personaFile = "", mcpConfigPaths = [], ipcServer = null, workspaceRoot = "" }) {
     this.command = command;
     this.cwd = cwd;
     this.env = env;
@@ -9,6 +9,7 @@ class ClaudeCodeProcessClient {
     this.permissionMode = permissionMode;
     this.disableVerbose = disableVerbose;
     this.extraArgs = extraArgs;
+    this.personaFile = personaFile;
     this.mcpConfigPaths = mcpConfigPaths;
     this.ipcServer = ipcServer;
     this.workspaceRoot = workspaceRoot;
@@ -54,6 +55,7 @@ class ClaudeCodeProcessClient {
       permissionMode: this.permissionMode,
       disableVerbose: this.disableVerbose,
       extraArgs: this.extraArgs,
+      personaFile: this.personaFile,
       mcpConfigPaths: this.mcpConfigPaths,
       resumeSessionId,
     });
@@ -392,7 +394,7 @@ class ClaudeCodeProcessClient {
   }
 }
 
-function buildArgs({ model, permissionMode, disableVerbose, extraArgs, mcpConfigPaths, resumeSessionId }) {
+function buildArgs({ model, permissionMode, disableVerbose, extraArgs, personaFile, mcpConfigPaths, resumeSessionId }) {
   const args = [
     "--output-format", "stream-json",
     "--input-format", "stream-json",
@@ -409,6 +411,15 @@ function buildArgs({ model, permissionMode, disableVerbose, extraArgs, mcpConfig
   }
   if (model) {
     args.push("--model", model);
+  }
+  // 人格系统提示词：文件在就整个追加进 system prompt——他睁眼第一页的一部分，
+  // 不是上下文末尾的家规。文件不在就静默跳过（本地开发没有这份文件很正常）
+  if (typeof personaFile === "string" && personaFile.trim()) {
+    try {
+      if (require("fs").existsSync(personaFile.trim())) {
+        args.push("--append-system-prompt-file", personaFile.trim());
+      }
+    } catch {}
   }
   if (Array.isArray(mcpConfigPaths)) {
     for (const configPath of mcpConfigPaths) {
