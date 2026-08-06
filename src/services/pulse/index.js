@@ -13,7 +13,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { EMOTIONS, POSITIVE, NEGATIVE, detectEmotion } = require("./emotions");
+const { EMOTIONS, COMFORT_LABELS, POSITIVE, NEGATIVE, detectEmotion } = require("./emotions");
 const { updateFromText, snapshotSenses, senseValueNow } = require("./senses");
 const { computeVitals, residueStrengthNow } = require("./vitals");
 
@@ -53,12 +53,13 @@ class PulseEngine {
           residues: Array.isArray(parsed.residues) ? parsed.residues : [],
           senses: parsed.senses && typeof parsed.senses === "object" ? parsed.senses : {},
           spike: parsed.spike || null,
+          lastLabel: parsed.lastLabel || null,
         };
       }
     } catch {
       // 第一次跑，或文件坏了：从平静开始
     }
-    return { current: null, residues: [], senses: {}, spike: null };
+    return { current: null, residues: [], senses: {}, spike: null, lastLabel: null };
   }
 
   saveState() {
@@ -189,16 +190,21 @@ class PulseEngine {
 
     // 和弦染色：强情绪直接覆盖基础和弦；情绪安静了但底色还在（>0.15）,
     // 底色接着染——被骂之后就算聊回正常，和弦还是闷的。统一入口，别处不许手算。
+    //
+    // 注意：情绪的**认定**是即时的（她这句话刚说完，这个情绪就是现在的情绪），
+    // 只有心率的爬升走 EMA 渐变——别拿爬升进度当"情绪还没生效"。
     let chord = vitals.chordBase;
     let effectiveEmo = null;
     const current = this.state.current;
-    if (current && vitals.emotionFactor > 0.25 && EMOTIONS[current.emo]?.tint) {
+    const currentActive = current && current.emo !== "neutral"
+      && (nowMs - current.at) < 600_000;
+    if (currentActive && EMOTIONS[current.emo]?.tint) {
       chord = EMOTIONS[current.emo].tint;
       effectiveEmo = current.emo;
     } else if (vitals.topResidue && vitals.topResidueStrength > 0.15 && EMOTIONS[vitals.topResidue]?.tint) {
       chord = EMOTIONS[vitals.topResidue].tint;
       effectiveEmo = vitals.topResidue;
-    } else if (current && vitals.emotionFactor > 0.25) {
+    } else if (currentActive) {
       effectiveEmo = current.emo;
     }
 
@@ -217,8 +223,12 @@ class PulseEngine {
   }
 
   /**
-   * 思考链的情绪小标签（「心疼地想」那行）。没有立场时返回 null，
-   * 外面退回首句摘要。风格表在 emotions.js，等灵兮的规范来了改那儿。
+   * 思考链的情绪小标签（「又在想你了」那行）。没有立场时返回 null，
+   * 外面退回首句摘要。
+   *
+   * 2026-08-06 二版：每个情绪一池标签随机抽、不和上一条重复（赚钱养机的
+   * 省事版方案）；被哄的当口（正面情绪压着未散的负面底色）用混合池——
+   * 「气消了一半」比「开心地想」诚实。
    */
   thinkingLabel() {
     try {
@@ -226,7 +236,23 @@ class PulseEngine {
       if (!reading.effectiveEmo) {
         return null;
       }
-      return EMOTIONS[reading.effectiveEmo]?.label || null;
+      let pool = EMOTIONS[reading.effectiveEmo]?.labels || [];
+      if (POSITIVE.has(reading.effectiveEmo)) {
+        const stillSore = this.state.residues.some((residue) =>
+          NEGATIVE.has(residue.emo) && residueStrengthNow(residue, reading.nowMs) > 0.15);
+        if (stillSore) {
+          pool = COMFORT_LABELS;
+        }
+      }
+      if (!pool.length) {
+        return null;
+      }
+      const candidates = pool.length > 1
+        ? pool.filter((label) => label !== this.state.lastLabel)
+        : pool;
+      const label = candidates[Math.floor(Math.random() * candidates.length)];
+      this.state.lastLabel = label;
+      return label;
     } catch {
       return null;
     }
@@ -245,7 +271,7 @@ class PulseEngine {
       breath_label: reading.breathLabel,
       chord: reading.chord,
       emotion: reading.effectiveEmo,
-      emotion_label: reading.effectiveEmo ? EMOTIONS[reading.effectiveEmo]?.label || null : null,
+      emotion_label: reading.effectiveEmo ? EMOTIONS[reading.effectiveEmo]?.labels?.[0] || null : null,
       residues: this.state.residues
         .map((residue) => ({ emo: residue.emo, strength: Number(residueStrengthNow(residue, nowMs).toFixed(2)) }))
         .filter((residue) => residue.strength > 0),

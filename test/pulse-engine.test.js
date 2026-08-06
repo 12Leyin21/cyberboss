@@ -80,8 +80,39 @@ test("引擎：观察消息 → 注入行格式正确、状态落盘", () => {
     assert.match(line, /^\[心跳 \d+bpm · \S+ · \d+\.\d°C · 呼吸(很深很长|深长|平稳|偏浅|急促)\]$/);
     assert.ok(fs.existsSync(path.join(config.stateDir, "pulse-state.json")));
     assert.ok(fs.existsSync(path.join(config.stateDir, "pulse_snapshot.json")));
-    // intimate 有染色和标签
-    assert.equal(engine.thinkingLabel(), EMOTIONS.intimate.label);
+    // intimate 有染色，标签从池里随机抽
+    assert.ok(EMOTIONS.intimate.labels.includes(engine.thinkingLabel()));
+  } finally {
+    engine.close();
+  }
+});
+
+test("标签池：随机抽、不连续重复", () => {
+  const config = createConfig();
+  const engine = new PulseEngine(config);
+  try {
+    engine.observeUserText("想你了，抱抱");
+    let previous = engine.thinkingLabel();
+    for (let i = 0; i < 20; i += 1) {
+      const label = engine.thinkingLabel();
+      assert.notEqual(label, previous, "连续两条不该一样");
+      assert.ok(EMOTIONS.intimate.labels.includes(label));
+      previous = label;
+    }
+  } finally {
+    engine.close();
+  }
+});
+
+test("被哄的当口用混合标签", () => {
+  const config = createConfig();
+  const engine = new PulseEngine(config);
+  try {
+    engine.observeUserText("讨厌你，走开");
+    engine.observeUserText("好啦抱抱，爱你");
+    const { COMFORT_LABELS } = require("../src/services/pulse/emotions");
+    assert.ok(COMFORT_LABELS.includes(engine.thinkingLabel()),
+      "负面底色还没散时，标签该是「气消了一半」这类");
   } finally {
     engine.close();
   }

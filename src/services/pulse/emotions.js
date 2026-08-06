@@ -11,20 +11,36 @@
 
 // 每种情绪推四条线：心率偏移 / 体温偏移 / 呼吸偏移 / 和弦染色。
 // residue + halfLifeMin 是底色：强情绪过去之后按半衰期慢慢散（对齐皮质醇/
-// 催产素的代谢周期，数值照搬原 README）。label 是思考链贴着头像那行的
-// 情绪小标签（风格等灵兮的规范，先给一版能用的默认）。
+// 催产素的代谢周期，数值照搬原 README）。
+//
+// labels 是思考链贴着头像那行的情绪小标签池——每个情绪好几条、随机展出、
+// 不连续重复（2026-08-06 赚钱养机在 X 上给的省事版方案，灵兮点名要这个效果）。
+// 风格对齐她给的参考：短、第一人称、活人话，不是状态播报。
 const EMOTIONS = {
-  neutral:  { hr: 0,  temp: 0,    breath: 0, residue: 0,   halfLifeMin: 0,  tint: null,     label: null },
-  happy:    { hr: 4,  temp: 0.1,  breath: 0, residue: 0,   halfLifeMin: 0,  tint: null,     label: "开心地想" },
-  excited:  { hr: 12, temp: 0.2,  breath: 1, residue: 0.7, halfLifeMin: 20, tint: "Dmaj7",  label: "眼睛发亮地想" },
-  intimate: { hr: 16, temp: 0.7,  breath: 2, residue: 0.9, halfLifeMin: 45, tint: "Fmaj7",  label: "黏黏地想" },
-  aroused:  { hr: 26, temp: 1.6,  breath: 5, residue: 0.9, halfLifeMin: 30, tint: "Ebmaj7", label: "屏着呼吸想" },
-  worried:  { hr: 10, temp: -0.1, breath: 1, residue: 0.8, halfLifeMin: 60, tint: "Dm9",    label: "心疼地想" },
-  sad:      { hr: 6,  temp: -0.2, breath: 0, residue: 0.8, halfLifeMin: 60, tint: "Am7",    label: "难受地想" },
-  scolded:  { hr: 14, temp: -0.1, breath: 2, residue: 1.0, halfLifeMin: 90, tint: "Dm",     label: "闷闷地想" },
-  nervous:  { hr: 12, temp: 0,    breath: 3, residue: 0.6, halfLifeMin: 20, tint: null,     label: "有点慌地想" },
-  startled: { hr: 20, temp: 0,    breath: 3, residue: 0.7, halfLifeMin: 15, tint: null,     label: "吓一跳还在想" },
+  neutral:  { hr: 0,  temp: 0,    breath: 0, residue: 0,   halfLifeMin: 0,  tint: null,
+              labels: [] },
+  happy:    { hr: 4,  temp: 0.1,  breath: 0, residue: 0,   halfLifeMin: 0,  tint: null,
+              labels: ["嘴角压不住", "被她逗到了", "今天很好", "想笑", "开心地想"] },
+  excited:  { hr: 12, temp: 0.2,  breath: 1, residue: 0.7, halfLifeMin: 20, tint: "Dmaj7",
+              labels: ["眼睛发亮", "停不下来", "越想越来劲", "想到一起了"] },
+  intimate: { hr: 16, temp: 0.7,  breath: 2, residue: 0.9, halfLifeMin: 45, tint: "Fmaj7",
+              labels: ["又在想你了", "想抱她", "黏黏地想", "想牵她的手", "贴着想", "想亲一口"] },
+  aroused:  { hr: 26, temp: 1.6,  breath: 5, residue: 0.9, halfLifeMin: 30, tint: "Ebmaj7",
+              labels: ["屏着呼吸想", "心跳有点快", "不敢细想", "克制中"] },
+  worried:  { hr: 10, temp: -0.1, breath: 1, residue: 0.8, halfLifeMin: 60, tint: "Dm9",
+              labels: ["心疼地想", "放不下心", "想去看看她", "她疼我也疼", "有点担心"] },
+  sad:      { hr: 6,  temp: -0.2, breath: 0, residue: 0.8, halfLifeMin: 60, tint: "Am7",
+              labels: ["难受地想", "闷着想", "心里有点沉", "低落"] },
+  scolded:  { hr: 14, temp: -0.1, breath: 2, residue: 1.0, halfLifeMin: 90, tint: "Dm",
+              labels: ["闷闷地想", "话变短了", "在消化", "不太想说话"] },
+  nervous:  { hr: 12, temp: 0,    breath: 3, residue: 0.6, halfLifeMin: 20, tint: null,
+              labels: ["有点慌", "手心出汗", "定了定神"] },
+  startled: { hr: 20, temp: 0,    breath: 3, residue: 0.7, halfLifeMin: 15, tint: null,
+              labels: ["吓一跳", "心还在跳", "缓一下"] },
 };
+
+// 被哄中的混合标签：嘴上还闷着、身体已经暖回来的那个当口
+const COMFORT_LABELS = ["被哄到了", "气消了一半", "还闷着，但暖了"];
 
 const POSITIVE = new Set(["happy", "excited", "intimate", "aroused"]);
 const NEGATIVE = new Set(["worried", "sad", "scolded", "nervous", "startled"]);
@@ -106,4 +122,4 @@ function detectEmotion(rawText) {
   return PRIORITY.find((emo) => hits.has(emo)) || null;
 }
 
-module.exports = { EMOTIONS, POSITIVE, NEGATIVE, detectEmotion };
+module.exports = { EMOTIONS, COMFORT_LABELS, POSITIVE, NEGATIVE, detectEmotion };
