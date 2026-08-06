@@ -8,9 +8,9 @@ const HALF_LIFE_MIN = { touch: 10, smell: 15, taste: 15, sound: 15 };
 
 // 触发表：她消息里的动作词 → 通道加成。
 const TRIGGERS = [
-  { channel: "touch", delta: 0.35, words: ["亲亲", "亲一口", "亲你"] },
-  { channel: "touch", delta: 0.30, words: ["抱抱", "抱一下", "抱紧", "搂"] },
-  { channel: "touch", delta: 0.25, words: ["摸摸", "贴贴", "蹭蹭", "捏捏"] },
+  { channel: "touch", delta: 0.35, words: ["亲亲", "亲一口", "亲你", "吻住", "吻你", "舌尖"] },
+  { channel: "touch", delta: 0.30, words: ["抱抱", "抱一下", "抱紧", "搂", "靠在你", "趴在你", "坐在你腿"] },
+  { channel: "touch", delta: 0.25, words: ["摸摸", "贴贴", "蹭蹭", "捏捏", "摩蹭", "蹭了蹭", "握住", "扣紧"] },
   { channel: "touch", delta: 0.20, words: ["牵手", "拉着你", "挠"] },
   { channel: "smell", delta: 0.20, words: ["好香", "香味", "闻到"] },
   { channel: "taste", delta: 0.15, words: ["好吃", "好甜", "好辣", "尝一口"] },

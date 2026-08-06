@@ -168,6 +168,11 @@ EFFORT_LEVELS = ("low", "medium", "high", "extra")
 # 他全权接管、正文写长写细；关着 = 平常的交互节奏。走 effort 同款管道：
 # 这里写小文件，cyberboss 每轮现读，翻译成轮次末尾的一行风格指令。
 LONGFORM_FILE = Path(os.environ.get("RELAY_LONGFORM_FILE", str(Path(BRAIN_FILE).parent / "longform_mode")))
+# 情绪房间（2026-08-06，取经 29-Cu/pelle-d-umore）：AI 回复里的 <mood>xxx</mood>
+# 标签。desire=酒红呼吸光晕 · moonlight=深蓝星空 · vuoto=灰度虚空 · rage=红黑
+# 扫描线 · clear=散场回到平常。标签剥进 meta.mood，正文里不留痕。
+MOOD_RE = re.compile(r"<mood>\s*([a-z0-9_]+)\s*</mood>", re.IGNORECASE)
+MOOD_NAMES = {"desire", "moonlight", "vuoto", "rage", "clear"}
 
 # --- who is in the room (2026-07-28) ---------------------------------------
 # Until now the room had exactly two seats and `direction` was enough to say who
@@ -1418,6 +1423,20 @@ async def channel_out(request: Request):
         return {"id": voice_msg["id"], "attachment": upload}
 
     text = body.get("text", "")
+    # 情绪房间（2026-08-06，取经 29-Cu/pelle-d-umore）：回复里藏 <mood>xxx</mood>
+    # 标签 → 剥掉进 meta，心潮按它换整个聊天房间的氛围。模型发号施令，UI 服从。
+    mood = None
+    if kind == "reply" and "<mood>" in text.lower():
+        match = MOOD_RE.search(text)
+        text = MOOD_RE.sub("", text).strip()
+        if match:
+            candidate = match.group(1).lower()
+            if candidate in MOOD_NAMES:
+                mood = candidate
+        if not text:
+            raise HTTPException(
+                status_code=400,
+                detail="mood 标签要贴在一条真回复上，不能单独发——把它放进你要说的话里重发")
     # 五子棋拦截：回复里带落子坐标且轮到 AI → 裁判应用；非法落子直接 400 让 AI 重下
     if kind == "reply":
         gomoku_result = gomoku_try_apply_ai_reply(text)
@@ -1429,6 +1448,8 @@ async def channel_out(request: Request):
             kind = "gomoku"   # 应用成功：转为对局消息，聊天页不显示、不推送通知
     meta = {k: v for k, v in body.items() if k not in ("type", "text")}
     meta.setdefault("channel", "心潮")   # so the shared timeline can show where it was said
+    if mood:
+        meta["mood"] = mood
     msg = save_message("out", kind, text, meta)
     # the AI replied — clear the typing state
     await broadcast(app_subs, {"type": "typing", "active": False})

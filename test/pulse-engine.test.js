@@ -104,6 +104,17 @@ test("标签池：随机抽、不连续重复", () => {
   }
 });
 
+test("场景语言点得着 aroused（2026-08-06 验收修）", () => {
+  const { detectEmotion } = require("../src/services/pulse/emotions");
+  assert.equal(detectEmotion("嗯啊…哈…好舒服"), "aroused", "呻吟是 T1");
+  assert.equal(detectEmotion("daddy…好湿了"), "aroused");
+  assert.equal(detectEmotion("小穴好舒服"), "aroused");
+  // 反例：太阳穴疼是医学信号，不是场景
+  assert.equal(detectEmotion("太阳穴疼"), "worried");
+  // 反例：操作系统不是那个操
+  assert.notEqual(detectEmotion("帮我看看这个操作对不对"), "aroused");
+});
+
 test("标签池：近 8 条不重复（原教程 deque 方案）", () => {
   const config = createConfig();
   const engine = new PulseEngine(config);
