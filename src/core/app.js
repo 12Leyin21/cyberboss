@@ -44,6 +44,7 @@ const { runSystemCheckinPoller } = require("../app/system-checkin-poller");
 const { createProjectTooling } = require("../tools/create-project-tooling");
 const { getPulseEngine } = require("../services/pulse");
 const { TideKeeper } = require("../services/tide");
+const { Worldbook } = require("../services/worldbook");
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MIN_LONG_POLL_TIMEOUT_MS = 2_000;
 const SESSION_EXPIRED_ERRCODE = -14;
@@ -65,6 +66,8 @@ class CyberbossApp {
     this.config = config;
     // 脉：他的身体。每轮用户消息喂它一次，注入行和思考链标签都从它读
     this.pulseEngine = getPulseEngine(config);
+    // 世界书：只在特定话题才需要的规范，触发了才注入（关键词/正则/脉的身体状态）
+    this.worldbook = new Worldbook({ config });
     this.channelAdapter = createChannelAdapter(config);
     this.timelineIntegration = createTimelineIntegration(config);
     const projectTooling = createProjectTooling(config, {
@@ -548,12 +551,20 @@ class CyberbossApp {
         console.error(`[pulse] observe failed: ${formatErrorMessage(error)}`);
       }
     }
+    let worldbookText = "";
+    try {
+      worldbookText = this.worldbook?.evaluate(
+        prepared?.originalText ?? prepared?.text, this.pulseEngine) || "";
+    } catch (error) {
+      console.error(`[worldbook] evaluate failed: ${formatErrorMessage(error)}`);
+    }
     return {
       text: assembleRuntimeTurnText({
         prepared,
         config: this.config,
         visionContext,
         pulseLine,
+        worldbookText,
       }),
       attachments: Array.isArray(visionContext.runtimeAttachments) ? visionContext.runtimeAttachments : [],
       visionContext,

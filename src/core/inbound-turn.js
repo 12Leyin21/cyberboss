@@ -44,7 +44,7 @@ function buildMergedInboundPrepared({
   };
 }
 
-function assembleRuntimeTurnText({ prepared, config = {}, visionContext = {}, pulseLine = "" }) {
+function assembleRuntimeTurnText({ prepared, config = {}, visionContext = {}, pulseLine = "", worldbookText = "" }) {
   const lines = [];
   const localTime = formatWechatLocalTime(prepared?.receivedAt);
   const originalText = normalizeText(prepared?.originalText ?? prepared?.text);
@@ -105,6 +105,13 @@ function assembleRuntimeTurnText({ prepared, config = {}, visionContext = {}, pu
       const label = item.absolutePath || item.sourceFileName || item.kind || "image";
       lines.push(`- ${label}: ${item.reason}`);
     }
+  }
+
+  // 世界书：触发的词条贴在轮次末尾——对话底部注意力最高（Kelivo 的洞察），
+  // 规范挨着正在发生的场景，比常驻系统提示词更近
+  if (worldbookText) {
+    pushSectionBreak(lines);
+    lines.push(worldbookText);
   }
 
   return lines.join("\n").trim();
