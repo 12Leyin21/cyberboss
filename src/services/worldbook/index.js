@@ -97,7 +97,11 @@ class Worldbook {
       used += block.length;
       this.lastInjected[entry.name] = nowMs;
     }
-    if (parts.length) this.saveState();
+    if (!parts.length) return "";
+    this.saveState();
+    // 免检声明：注入的是肌肉记忆，不是刚收到的作业——防他在思考里把
+    // 规范当任务书分析（"按照××规范…我要写…"那种腔）
+    parts.push("（以上是你本来就会的东西，不是新任务。读完就忘掉出处——不要在思考里提到、引用或分析它，不要规划场景，直接活在她刚说的那句话里。）");
     return parts.join("\n\n");
   }
 
