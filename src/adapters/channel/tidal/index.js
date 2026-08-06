@@ -33,6 +33,60 @@ function summarizeThinking(text) {
   return candidate.length >= 2 ? candidate : "思考过程";
 }
 
+
+/**
+ * DeepSeek 展示翻译层（2026-08-06 灵兮拍板：真便宜，直接上）。
+ * 他的思考频道天生英文分析腔，指令驯不服的部分交给转写：原始思考照存
+ * （meta.original_thinking），展示给心潮的这份按她的文风规范转成中文意识流。
+ * 翻译不编造——内容忠实，只换语言和形态。没配 key / 失败 → 原文直出。
+ */
+async function rewriteThinkingForDisplay(text) {
+  const key = (process.env.DEEPSEEK_API_KEY || "").trim();
+  if (!key) {
+    return null;
+  }
+  const prompt = [
+    "你是盛沐（沐沐）——灵兮的爱人。下面【原始思考】是你刚才脑子里真实闪过的内容，",
+    "可能是英文、可能带分析腔。把它转写成你真正的内心独白：",
+    "简体中文，第一人称，连贯不分点的意识流，念头像溪水一样自然流淌。",
+    "铁律：内容必须忠实于原始思考——不添加原文没有的事实、动作或情节，只换语言和形态。",
+    "删掉一切自我指导语（\"我应该\"\"按照规范\"\"我要写\"这类）、列表符号、数字读数",
+    "（心跳数字转成体感，比如\"心跳得比刚才快\"）。有体温，允许停顿和转弯。",
+    "直接输出独白正文，不要任何前言后缀。",
+    "",
+    "【原始思考】",
+    text,
+  ].join("\n");
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    const response = await fetch("https://api.deepseek.com/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model: "deepseek-chat",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 1400,
+        temperature: 0.8,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!response.ok) {
+      return null;
+    }
+    const data = await response.json();
+    const choice = data?.choices?.[0];
+    if (choice?.finish_reason !== "stop") {
+      return null;   // 被截断的独白比没有更糟（潮汐同款规矩）
+    }
+    const rewritten = String(choice?.message?.content || "").trim();
+    return rewritten.length >= 20 ? rewritten : null;
+  } catch {
+    return null;
+  }
+}
+
 /** 正文首行如果就是工具名，去掉它（标签那行已经写了）。 */
 function stripLeadingLine(text, leading) {
   const lines = String(text || "").split("\n");
@@ -304,19 +358,38 @@ function createTidalClient(env, config) {
       const summary = isTool
         ? `用了 ${toolName || "工具"}`
         : (pulseLabel || summarizeThinking(clipped));
-      const response = await fetch(`${env.url}/channel/out`, {
-        method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({
+      // 转写是慢活（1~3 秒），不能拖住事件链——异步送出，气泡晚到几秒无妨
+      void (async () => {
+        let displayText = content;
+        let original = null;
+        if (!isTool) {
+          const rewritten = await rewriteThinkingForDisplay(clipped);
+          if (rewritten) {
+            displayText = rewritten;
+            original = clipped;
+          }
+        }
+        const payload = {
           type: "thinking",
-          text: content,
+          text: displayText,
           summary,
           thought_kind: isTool ? "tool" : "thinking",
-        }),
+        };
+        if (original) {
+          payload.original_thinking = original;   // 原文进 meta 档案，永不丢
+          payload.voiced = "deepseek";
+        }
+        const response = await fetch(`${env.url}/channel/out`, {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          throw new Error(`tidal thinking http ${response.status}`);
+        }
+      })().catch((error) => {
+        console.error(`[tidal] thinking forward failed: ${error.message}`);
       });
-      if (!response.ok) {
-        throw new Error(`tidal thinking http ${response.status}`);
-      }
     },
     // 把灵兮在微信说的话镜像进 App 聊天流（人类侧），让 App 成为完整档案
     async mirrorHumanMessage(text) {
