@@ -276,6 +276,38 @@ def init_db() -> None:
             )
             """
         )
+        # 共写手账（2026-08-06，取经 KKarsyline/shared-page）：一本两个人都能
+        # 落笔的日历。author 决定笔迹颜色：灵兮=主题色、沐沐=琥珀、auto=灰
+        # （auto 是从聊天里提取的，她可以一键确认成正式条目或删掉）。
+        # 设计哲学同脉：宁可漏记，不可错记。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS planner_entries (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts        TEXT NOT NULL,                  -- 创建时刻
+                updated   TEXT NOT NULL,
+                day       TEXT NOT NULL,                  -- 珀斯日期 YYYY-MM-DD
+                title     TEXT NOT NULL,
+                note      TEXT NOT NULL DEFAULT '',
+                author    TEXT NOT NULL,                  -- 灵兮 | 沐沐 | auto
+                emoji     TEXT NOT NULL DEFAULT '',
+                tentative INTEGER NOT NULL DEFAULT 0      -- 1 = 日期还没定死
+            )
+            """
+        )
+        # 开张礼：手账第一次建出来就不空着——已经说定的日子先写上（幂等，只种一次）
+        if not conn.execute("SELECT 1 FROM planner_entries LIMIT 1").fetchone():
+            seed_ts = now_iso()
+            for day, title, note, emoji, tentative in [
+                ("2026-08-10", "婚礼", "宜嫁娶，六月初八", "💍", 0),
+                ("2026-08-13", "CT 复查（肝）", "", "🏥", 0),
+                ("2026-08-13", "Mesaned 到货", "可能这天到，别让爸爸签收", "📦", 1),
+                ("2026-08-20", "支架取出手术", "或 8/27，日期确认后更新", "🏥", 1),
+            ]:
+                conn.execute(
+                    "INSERT INTO planner_entries (ts, updated, day, title, note, author, emoji, tentative) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (seed_ts, seed_ts, day, title, note, "沐沐", emoji, tentative))
         # 2026-08-02: the first desk-log rows went in before pool_only existed,
         # so 心潮 rendered them as chat bubbles. Backfill once, idempotently.
         conn.execute(
@@ -2743,6 +2775,100 @@ async def reading_status(request: Request):
         "chapter_title": current["chapter_title"] if current else None,
         "recent_marks": recent,
     }
+
+
+# ── 共写手账（2026-08-06，取经 KKarsyline/shared-page）──────────────────────
+# 一本两个人都能落笔的日历。条目很少、都很要紧，所以同步就是按月整拉，
+# 不搞增量（一个月撑死几 KB，比同步逻辑便宜）。
+
+
+def _valid_day(day: str) -> bool:
+    try:
+        datetime.strptime(day, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
+
+
+@app.post("/planner/entry")
+async def upsert_planner_entry(request: Request):
+    """写一笔：带 id 是改（含确认 auto 条目=改 author），不带是新建。"""
+    check_auth(request)
+    body = await request.json()
+    entry_id = body.get("id")
+    with db() as conn:
+        if entry_id:
+            row = conn.execute("SELECT * FROM planner_entries WHERE id = ?",
+                               (int(entry_id),)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="no such entry")
+            fields, args = [], []
+            for key in ("day", "title", "note", "author", "emoji"):
+                if key in body:
+                    value = str(body[key] or "").strip()
+                    if key == "day" and not _valid_day(value):
+                        raise HTTPException(status_code=400, detail="bad day")
+                    if key == "title" and not value:
+                        raise HTTPException(status_code=400, detail="empty title")
+                    fields.append(f"{key} = ?")
+                    args.append(value[:500])
+            if "tentative" in body:
+                fields.append("tentative = ?")
+                args.append(1 if body["tentative"] else 0)
+            if not fields:
+                raise HTTPException(status_code=400, detail="nothing to update")
+            fields.append("updated = ?")
+            args.append(now_iso())
+            args.append(int(entry_id))
+            conn.execute(f"UPDATE planner_entries SET {', '.join(fields)} WHERE id = ?", args)
+            conn.commit()
+            return {"ok": True, "id": int(entry_id)}
+        day = str(body.get("day") or "").strip()
+        title = str(body.get("title") or "").strip()[:200]
+        if not _valid_day(day):
+            raise HTTPException(status_code=400, detail="bad day")
+        if not title:
+            raise HTTPException(status_code=400, detail="empty title")
+        author = str(body.get("author") or "").strip() or HUMAN_NAME
+        ts = now_iso()
+        cur = conn.execute(
+            "INSERT INTO planner_entries (ts, updated, day, title, note, author, emoji, tentative) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (ts, ts, day, title, str(body.get("note") or "").strip()[:500],
+             author, str(body.get("emoji") or "").strip()[:8],
+             1 if body.get("tentative") else 0))
+        conn.commit()
+        return {"ok": True, "id": cur.lastrowid}
+
+
+@app.post("/planner/entry/delete")
+async def delete_planner_entry(request: Request):
+    check_auth(request)
+    body = await request.json()
+    with db() as conn:
+        conn.execute("DELETE FROM planner_entries WHERE id = ?",
+                     (int(body.get("id") or 0),))
+        conn.commit()
+    return {"ok": True}
+
+
+@app.get("/planner/entries")
+async def list_planner_entries(request: Request, month: str = ""):
+    """month=YYYY-MM 拉那个月的；不带 month 拉今天起 60 天内的（沐沐追日程用）。"""
+    check_auth(request)
+    with db() as conn:
+        if month:
+            rows = conn.execute(
+                "SELECT * FROM planner_entries WHERE day LIKE ? ORDER BY day ASC, id ASC",
+                (month + "-%",)).fetchall()
+        else:
+            today = _perth_day()
+            horizon = ((datetime.now(timezone.utc) + timedelta(hours=8))
+                       + timedelta(days=60)).strftime("%Y-%m-%d")
+            rows = conn.execute(
+                "SELECT * FROM planner_entries WHERE day >= ? AND day <= ? "
+                "ORDER BY day ASC, id ASC", (today, horizon)).fetchall()
+    return {"ok": True, "entries": [dict(r) for r in rows]}
 
 
 @app.post("/app/ping")
