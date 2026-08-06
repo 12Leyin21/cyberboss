@@ -164,6 +164,10 @@ MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,60}$")
 # 空文件 = 没覆盖，跑 cyberboss 自己的默认。
 EFFORT_FILE = Path(os.environ.get("RELAY_EFFORT_FILE", str(Path(BRAIN_FILE).parent / "effort_target")))
 EFFORT_LEVELS = ("low", "medium", "high", "extra")
+# 长文模式（2026-08-06）：她在聊天页 ⋯ 菜单里拨的开关。开着 = 这一轮她想让
+# 他全权接管、正文写长写细；关着 = 平常的交互节奏。走 effort 同款管道：
+# 这里写小文件，cyberboss 每轮现读，翻译成轮次末尾的一行风格指令。
+LONGFORM_FILE = Path(os.environ.get("RELAY_LONGFORM_FILE", str(Path(BRAIN_FILE).parent / "longform_mode")))
 
 # --- who is in the room (2026-07-28) ---------------------------------------
 # Until now the room had exactly two seats and `direction` was enough to say who
@@ -3179,6 +3183,26 @@ async def set_effort(request: Request):
         raise HTTPException(status_code=400, detail=f"effort must be one of {EFFORT_LEVELS}")
     EFFORT_FILE.write_text(effort, encoding="utf-8")
     return {"effort": effort}
+
+
+@app.get("/app/longform")
+async def get_longform(request: Request):
+    check_auth(request)
+    try:
+        on = LONGFORM_FILE.read_text(encoding="utf-8").strip() == "1"
+    except OSError:
+        on = False
+    return {"on": on}
+
+
+@app.post("/app/longform")
+async def set_longform(request: Request):
+    """拨长文模式开关。不进聊天流、不推送——纯设置。"""
+    check_auth(request)
+    body = await request.json()
+    on = bool(body.get("on"))
+    LONGFORM_FILE.write_text("1" if on else "0", encoding="utf-8")
+    return {"on": on}
 
 
 @app.get("/app/loop_config")

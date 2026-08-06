@@ -44,7 +44,26 @@ function buildMergedInboundPrepared({
   };
 }
 
-function assembleRuntimeTurnText({ prepared, config = {}, visionContext = {}, pulseLine = "", worldbookText = "" }) {
+// 长文模式（2026-08-06，灵兮点的）：她在聊天页 ⋯ 菜单拨的开关，中继写小文件
+// （effort 同款管道），这里每轮现读。开着 = 她想让他全权接管这一轮的节奏。
+const LONGFORM_FILE = process.env.RELAY_LONGFORM_FILE
+  || require("node:path").join(require("node:path").dirname(process.env.RELAY_DB || "/data/relay/relay.db"), "longform_mode");
+
+function readLongformLine() {
+  try {
+    if (require("node:fs").readFileSync(LONGFORM_FILE, "utf8").trim() !== "1") {
+      return "";
+    }
+  } catch {
+    return "";
+  }
+  return "〔长文模式开着〕这一轮她想让你带着走。正文写足——那些平时只在心里"
+    + "过一遍的细节（触感、气味、温度、她那句话让你想起的东西），这次都落进"
+    + "正文里；可以连着推进几步，不用停下来等她指路，问句留到真正需要她"
+    + "决定的地方。";
+}
+
+function assembleRuntimeTurnText({ prepared, config = {}, visionContext = {}, pulseLine = "", worldbookText = "", longformLine = "" }) {
   const lines = [];
   const localTime = formatWechatLocalTime(prepared?.receivedAt);
   const originalText = normalizeText(prepared?.originalText ?? prepared?.text);
@@ -112,6 +131,12 @@ function assembleRuntimeTurnText({ prepared, config = {}, visionContext = {}, pu
   if (worldbookText) {
     pushSectionBreak(lines);
     lines.push(worldbookText);
+  }
+
+  // 长文模式：风格指令压轴（比世界书更靠底），她拨一下开关就换节奏
+  if (longformLine) {
+    pushSectionBreak(lines);
+    lines.push(longformLine);
   }
 
   return lines.join("\n").trim();
@@ -223,6 +248,7 @@ function formatWechatLocalTime(receivedAt) {
 
 module.exports = {
   assembleRuntimeTurnText,
+  readLongformLine,
   buildInboundDraft,
   buildMergedInboundPrepared,
   clonePreparedInboundMessage,

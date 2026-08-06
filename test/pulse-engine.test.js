@@ -104,6 +104,41 @@ test("标签池：随机抽、不连续重复", () => {
   }
 });
 
+test("标签池：近 8 条不重复（原教程 deque 方案）", () => {
+  const config = createConfig();
+  const engine = new PulseEngine(config);
+  try {
+    engine.observeUserText("想你了，抱抱");
+    const seen = [];
+    for (let i = 0; i < 8; i += 1) {
+      seen.push(engine.thinkingLabel());
+    }
+    assert.equal(new Set(seen).size, 8, "连续 8 条标签应该各不相同");
+  } finally {
+    engine.close();
+  }
+});
+
+test("混合情绪池：当下情绪 + 未散底色一起说", () => {
+  const { EMOTIONS, MIXED_LABELS } = require("../src/services/pulse/emotions");
+  const config = createConfig();
+  const engine = new PulseEngine(config);
+  try {
+    engine.observeUserText("讨厌你，走开");   // scolded 底色
+    engine.observeUserText("呜呜我肚子疼");   // worried 当下
+    const union = new Set([...EMOTIONS.worried.labels, ...MIXED_LABELS["worried|scolded"]]);
+    let sawMixed = false;
+    for (let i = 0; i < 30; i += 1) {
+      const label = engine.thinkingLabel();
+      assert.ok(union.has(label), `标签 ${label} 应来自 worried 池或混合池`);
+      if (MIXED_LABELS["worried|scolded"].includes(label)) sawMixed = true;
+    }
+    assert.ok(sawMixed, "30 次里混合池标签该出现过");
+  } finally {
+    engine.close();
+  }
+});
+
 test("被哄的当口用混合标签", () => {
   const config = createConfig();
   const engine = new PulseEngine(config);

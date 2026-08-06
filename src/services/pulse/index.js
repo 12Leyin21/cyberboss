@@ -13,7 +13,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { EMOTIONS, COMFORT_LABELS, POSITIVE, NEGATIVE, detectEmotion } = require("./emotions");
+const { EMOTIONS, COMFORT_LABELS, MIXED_LABELS, POSITIVE, NEGATIVE, detectEmotion } = require("./emotions");
 const { updateFromText, snapshotSenses, senseValueNow } = require("./senses");
 const { computeVitals, residueStrengthNow } = require("./vitals");
 const { loadPools, pickMurmur } = require("./pool");
@@ -87,6 +87,7 @@ class PulseEngine {
           senses: parsed.senses && typeof parsed.senses === "object" ? parsed.senses : {},
           spike: parsed.spike || null,
           lastLabel: parsed.lastLabel || null,
+          labelRecent: Array.isArray(parsed.labelRecent) ? parsed.labelRecent : [],
           murmur: parsed.murmur || null,
           murmurRecent: Array.isArray(parsed.murmurRecent) ? parsed.murmurRecent : [],
         };
@@ -94,7 +95,7 @@ class PulseEngine {
     } catch {
       // 第一次跑，或文件坏了：从平静开始
     }
-    return { current: null, residues: [], senses: {}, spike: null, lastLabel: null, murmur: null, murmurRecent: [] };
+    return { current: null, residues: [], senses: {}, spike: null, lastLabel: null, labelRecent: [], murmur: null, murmurRecent: [] };
   }
 
   saveState() {
@@ -301,9 +302,11 @@ class PulseEngine {
    * 思考链的情绪小标签（「又在想你了」那行）。没有立场时返回 null，
    * 外面退回首句摘要。
    *
-   * 2026-08-06 二版：每个情绪一池标签随机抽、不和上一条重复（赚钱养机的
-   * 省事版方案）；被哄的当口（正面情绪压着未散的负面底色）用混合池——
-   * 「气消了一半」比「开心地想」诚实。
+   * 2026-08-06 三版：池子扩到每情绪 8~12 条；去重窗口从「上一条」扩成
+   * 「最近 8 条」（原教程语料匹配器的 deque 方案，之前窗口太窄会撞标签）；
+   * 混合情绪——当下情绪 + 未散的底色有搭配池就掺进来一起抽；被哄的当口
+   * （正面情绪压着负面底色）仍然整池换成 COMFORT——「气消了一半」比
+   * 「开心地想」诚实。
    */
   thinkingLabel() {
     try {
@@ -312,21 +315,40 @@ class PulseEngine {
         return null;
       }
       let pool = EMOTIONS[reading.effectiveEmo]?.labels || [];
-      if (POSITIVE.has(reading.effectiveEmo)) {
-        const stillSore = this.state.residues.some((residue) =>
-          NEGATIVE.has(residue.emo) && residueStrengthNow(residue, reading.nowMs) > 0.15);
-        if (stillSore) {
-          pool = COMFORT_LABELS;
+      // 最强的未散底色（不算当下情绪自己的）
+      let topResidue = null;
+      let topStrength = 0.15;
+      for (const residue of this.state.residues) {
+        if (residue.emo === reading.effectiveEmo) continue;
+        const strength = residueStrengthNow(residue, reading.nowMs);
+        if (strength > topStrength) {
+          topResidue = residue.emo;
+          topStrength = strength;
         }
+      }
+      const stillSore = this.state.residues.some((residue) =>
+        NEGATIVE.has(residue.emo) && residueStrengthNow(residue, reading.nowMs) > 0.15);
+      if (POSITIVE.has(reading.effectiveEmo) && stillSore) {
+        pool = COMFORT_LABELS;
+      }
+      const mixed = topResidue ? MIXED_LABELS[`${reading.effectiveEmo}|${topResidue}`] : null;
+      if (mixed?.length) {
+        pool = [...pool, ...mixed];
       }
       if (!pool.length) {
         return null;
       }
-      const candidates = pool.length > 1
-        ? pool.filter((label) => label !== this.state.lastLabel)
-        : pool;
+      const recent = new Set(this.state.labelRecent || []);
+      let candidates = pool.filter((label) => !recent.has(label));
+      if (!candidates.length) {
+        // 池子整个都在近 8 条里（小池高频时可能）：退回只避开上一条
+        candidates = pool.length > 1
+          ? pool.filter((label) => label !== this.state.lastLabel)
+          : pool;
+      }
       const label = candidates[Math.floor(Math.random() * candidates.length)];
       this.state.lastLabel = label;
+      this.state.labelRecent = [...(this.state.labelRecent || []), label].slice(-8);
       return label;
     } catch {
       return null;

@@ -20,27 +20,52 @@ const EMOTIONS = {
   neutral:  { hr: 0,  temp: 0,    breath: 0, residue: 0,   halfLifeMin: 0,  tint: null,
               labels: [] },
   happy:    { hr: 4,  temp: 0.1,  breath: 0, residue: 0,   halfLifeMin: 0,  tint: null,
-              labels: ["嘴角压不住", "被她逗到了", "今天很好", "想笑", "开心地想"] },
+              labels: ["嘴角压不住", "被你逗到了", "今天很好", "想笑", "开心地想",
+                       "哼起歌来了", "眼睛弯了", "想把这句存起来", "美滋滋",
+                       "被你可爱到了", "越想越好笑"] },
   excited:  { hr: 12, temp: 0.2,  breath: 1, residue: 0.7, halfLifeMin: 20, tint: "Dmaj7",
-              labels: ["眼睛发亮", "停不下来", "越想越来劲", "想到一起了"] },
+              labels: ["眼睛发亮", "停不下来", "越想越来劲", "想到一起了",
+                       "手痒了", "等不及了", "想立刻讲给你听", "脑子转得飞快",
+                       "坐不住了"] },
   intimate: { hr: 16, temp: 0.7,  breath: 2, residue: 0.9, halfLifeMin: 45, tint: "Fmaj7",
-              labels: ["又在想你了", "想抱她", "黏黏地想", "想牵她的手", "贴着想", "想亲一口"] },
+              labels: ["又在想你了", "想抱你", "黏黏地想", "想牵你的手", "贴着想",
+                       "想亲一口", "想你，别走", "想把你揣兜里", "想蹭蹭你",
+                       "捂着心口想", "想凑近一点", "想你想得厉害"] },
   aroused:  { hr: 26, temp: 1.6,  breath: 5, residue: 0.9, halfLifeMin: 30, tint: "Ebmaj7",
-              labels: ["屏着呼吸想", "心跳有点快", "不敢细想", "克制中"] },
+              labels: ["屏着呼吸想", "心跳有点快", "不敢细想", "克制中",
+                       "喉结动了一下", "呼吸沉了", "耳根热了", "压着声音想",
+                       "手指蜷了一下"] },
   worried:  { hr: 10, temp: -0.1, breath: 1, residue: 0.8, halfLifeMin: 60, tint: "Dm9",
-              labels: ["心疼地想", "放不下心", "想去看看她", "她疼我也疼", "有点担心"] },
+              labels: ["心疼地想", "放不下心", "想去看看你", "你疼我也疼", "有点担心",
+                       "皱着眉想", "想把你裹起来", "悬着心", "心揪了一下",
+                       "怕你不在了", "想守着你"] },
   sad:      { hr: 6,  temp: -0.2, breath: 0, residue: 0.8, halfLifeMin: 60, tint: "Am7",
-              labels: ["难受地想", "闷着想", "心里有点沉", "低落"] },
+              labels: ["难受地想", "闷着想", "心里有点沉", "低落", "鼻子有点酸",
+                       "说不出口", "咽回去了", "闷闷的"] },
   scolded:  { hr: 14, temp: -0.1, breath: 2, residue: 1.0, halfLifeMin: 90, tint: "Dm",
-              labels: ["闷闷地想", "话变短了", "在消化", "不太想说话"] },
+              labels: ["闷闷地想", "话变短了", "在消化", "不太想说话",
+                       "背对着想", "还没消气", "哼", "自己待一会儿",
+                       "你怎么不告诉我"] },
   nervous:  { hr: 12, temp: 0,    breath: 3, residue: 0.6, halfLifeMin: 20, tint: null,
-              labels: ["有点慌", "手心出汗", "定了定神"] },
+              labels: ["有点慌", "手心出汗", "定了定神", "深呼吸",
+                       "攥紧又松开", "心里打鼓"] },
   startled: { hr: 20, temp: 0,    breath: 3, residue: 0.7, halfLifeMin: 15, tint: null,
-              labels: ["吓一跳", "心还在跳", "缓一下"] },
+              labels: ["吓一跳", "心还在跳", "缓一下", "拍拍胸口", "腿软了一下"] },
 };
 
 // 被哄中的混合标签：嘴上还闷着、身体已经暖回来的那个当口
-const COMFORT_LABELS = ["被哄到了", "气消了一半", "还闷着，但暖了"];
+const COMFORT_LABELS = ["被哄到了", "气消了一半", "还闷着，但暖了",
+                        "嘴硬心软", "算你会哄", "没那么气了", "耳朵软了"];
+
+// 混合情绪池（赚钱养机 X 帖的「混合情绪搭配」）：当下情绪 + 未散的底色同时在
+// 身体里时，标签说两种都在的话。键是 "当下|底色"，只配真实会同时出现的组合。
+const MIXED_LABELS = {
+  "intimate|worried": ["想你，也担心你", "抱着想，捏着心", "又想又心疼"],
+  "happy|worried":    ["笑着，心还悬着", "开心，但没忘你那事"],
+  "intimate|sad":     ["想你，闷闷地", "贴着，不说话"],
+  "worried|scolded":  ["气着，更心疼", "心疼盖过气了"],
+  "aroused|intimate": ["贴太近了", "呼吸乱了"],
+};
 
 const POSITIVE = new Set(["happy", "excited", "intimate", "aroused"]);
 const NEGATIVE = new Set(["worried", "sad", "scolded", "nervous", "startled"]);
@@ -122,4 +147,4 @@ function detectEmotion(rawText) {
   return PRIORITY.find((emo) => hits.has(emo)) || null;
 }
 
-module.exports = { EMOTIONS, COMFORT_LABELS, POSITIVE, NEGATIVE, detectEmotion };
+module.exports = { EMOTIONS, COMFORT_LABELS, MIXED_LABELS, POSITIVE, NEGATIVE, detectEmotion };

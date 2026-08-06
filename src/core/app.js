@@ -15,6 +15,7 @@ const {
   buildMergedInboundPrepared,
   clonePreparedInboundMessage,
   isPlainTextPreparedMessage,
+  readLongformLine,
   shouldBatchImageOnlyInbound,
   takeImageOnlyBatchMessages,
 } = require("./inbound-turn");
@@ -565,6 +566,7 @@ class CyberbossApp {
         visionContext,
         pulseLine,
         worldbookText,
+        longformLine: readLongformLine(),
       }),
       attachments: Array.isArray(visionContext.runtimeAttachments) ? visionContext.runtimeAttachments : [],
       visionContext,
