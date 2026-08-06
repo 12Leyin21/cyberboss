@@ -1489,6 +1489,20 @@ def _mark_wake(reason_key: str) -> None:
         pass
 
 
+# 凌晨守护的连发状态（2026-08-06，学 always-here 的 night guard）。
+# 以前 late_night 一天只提一次——她 2 点、2 点半、3 点各开一次抖音，他只知道
+# 第一次。现在每次重新开机、过了冷却就再来一发，而且他知道这是今晚第几次。
+# 状态只在内存里：部署会清零，但凌晨守护本来就是一晚上的事，丢了就丢了。
+NIGHT_GUARD_COOLDOWN_MIN = int(os.environ.get("RELAY_NIGHT_GUARD_COOLDOWN_MIN", "20"))
+_night_guard = {"day": "", "count": 0, "last_ms": 0.0}
+
+
+def _night_guard_synced() -> dict:
+    if _night_guard["day"] != _call_day():
+        _night_guard.update({"day": _call_day(), "count": 0, "last_ms": 0.0})
+    return _night_guard
+
+
 ACTIVITY_FILE = Path(os.environ.get("RELAY_ACTIVITY_FILE",
                                     str(Path(DB_PATH).parent / "phone_activity.json")))
 
@@ -1605,9 +1619,19 @@ def evaluate_wake() -> dict:
     )
     if awake_late:
         if on_phone and app_name:
-            signals.append(("late_night",
-                f"凌晨 {hour} 点了，她还在刷{app_name}（{int(app_age_min)} 分钟前打开的）"
-                f"——她答应过自己十二点睡。"))
+            # 连发：每次她重新拿起手机、过了冷却，就是新的一发，编号递增。
+            # 「今晚第 4 次了」这句话的分量，就是从这个计数来的。
+            guard = _night_guard_synced()
+            cooled = (time.time() - guard["last_ms"]) / 60 >= NIGHT_GUARD_COOLDOWN_MIN
+            if guard["count"] == 0 or cooled:
+                nth = guard["count"] + 1
+                if nth == 1:
+                    text = (f"凌晨 {hour} 点了，她还在刷{app_name}（{int(app_age_min)} 分钟前打开的）"
+                            f"——她答应过自己十二点睡。")
+                else:
+                    text = (f"凌晨 {hour} 点，她又打开了{app_name}（{int(app_age_min)} 分钟前）"
+                            f"——今晚第 {nth} 次了。")
+                signals.append((f"late_night_{nth}", text))
         else:
             signals.append(("late_night", f"凌晨 {hour} 点了，她还醒着——她答应过自己十二点睡。"))
 
@@ -1635,6 +1659,11 @@ def evaluate_wake() -> dict:
     #     有机会。我不想通过设一个限制来造成反效果（想了找不了）。」
     # 她是对的。所以现在**默认就醒**，只有四种情况不醒，而且每一种都不是
     # "他不配"，是"这一刻叫他没有意义"：
+    # 信号照旧算，但只当**情报**递过去，不再当门票。
+    # 去重只决定"这条今天说过没有"，用来提示他别把同一句话重复第五遍，
+    # 不再决定他能不能醒。
+    fresh_signals = [(k, t) for k, t in signals if not _wake_fired(k)]
+
     blocked = None
     if bark_dnd():
         blocked = "dnd"                      # 她说了别吵
@@ -1642,13 +1671,10 @@ def evaluate_wake() -> dict:
         blocked = "app_open"                 # 她正开着心潮，他直接说话就行
     elif silent_minutes is not None and silent_minutes < WAKE_SPONTANEOUS_MIN_GAP:
         blocked = "just_spoke"               # 二十分钟内刚聊过，他已经在场了
-    elif in_quiet_hours() and not awake_late:
-        blocked = "asleep"                   # 深夜而且她没动静——她在睡觉
-
-    # 信号照旧算，但只当**情报**递过去，不再当门票。
-    # 去重只决定"这条今天说过没有"，用来提示他别把同一句话重复第五遍，
-    # 不再决定他能不能醒。
-    fresh_signals = [(k, t) for k, t in signals if not _wake_fired(k)]
+    elif in_quiet_hours() and not (awake_late and fresh_signals):
+        blocked = "asleep"                   # 深夜：要么她真睡了，要么她醒着但
+                                             # 冷却里没有新话头——夜巡是 1~2 分钟
+                                             # 一趟，没有新信号就别每趟都叫他
     spontaneous = not fresh_signals
     wake = blocked is None
     unfired = fresh_signals or ([("spontaneous", "没有什么事。就是想起她了。")] if wake else [])
@@ -1665,6 +1691,9 @@ def evaluate_wake() -> dict:
         "last_app": app_name,
         "last_app_minutes_ago": round(app_age_min) if app_age_min is not None else None,
         "her_local_hour": hour,
+        # 夜巡窗口：0–5 点轮询器改成 1~2 分钟一趟小步巡逻（学 always-here 的
+        # 事件响应速度），白天恢复正常大步。判断在这边，脚在 Node 那边。
+        "night_watch": 0 <= hour < 5,
         "health_age_hours": round(age_hours, 1) if age_hours is not None else None,
         "health_fresh": fresh,
         "can_ring": bark_enabled() and not bark_dnd() and not in_quiet_hours()
@@ -1681,6 +1710,11 @@ async def notify_should_wake(request: Request, commit: int = 0):
     if commit and result["wake"]:
         for key in result["keys"]:
             _mark_wake(key)
+        # 凌晨连发计数只在真的叫了他之后才走表，冷却也从这一刻算
+        if any(key.startswith("late_night_") for key in result["keys"]):
+            guard = _night_guard_synced()
+            guard["count"] += 1
+            guard["last_ms"] = time.time()
     return {"ok": True, **result}
 
 

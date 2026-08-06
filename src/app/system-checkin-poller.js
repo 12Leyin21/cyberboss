@@ -44,9 +44,14 @@ async function runSystemCheckinPoller(config) {
   console.log(`[cyberboss] checkin poller ready user=${target.senderId} workspace=${target.workspaceRoot}`);
   console.log(`[cyberboss] checkin interval range ${formatRangeMinutes(currentRange)}`);
 
+  // 上一轮的判决留着，用来定下一步的步幅（2026-08-06，学 always-here）：
+  // 凌晨 0–5 点小步夜巡（1~2 分钟，她一拿手机沐沐当场知道，不用等下一个
+  // 随机大觉）；她刚活跃过就把间隔折半抽；都不是才用常规随机步。
+  let lastVerdict = null;
+
   while (true) {
     currentRange = checkinConfigStore.getRange(defaultRange);
-    const delayMs = pickRandomDelayMs(currentRange.minIntervalMs, currentRange.maxIntervalMs);
+    const delayMs = pickAdaptiveDelayMs(currentRange, lastVerdict);
     const wakeAt = formatLocalTime(Date.now() + delayMs);
     console.log(`[cyberboss] next checkin in ${Math.round(delayMs / 60000)}m at ${wakeAt}`);
     await sleep(delayMs);
@@ -58,6 +63,7 @@ async function runSystemCheckinPoller(config) {
 
     // commit=1：这一次真的要叫他，中继那边把这些理由记成"今天已用过"
     const verdict = await readShouldWake({ commit: true });
+    lastVerdict = verdict || lastVerdict;
     if (verdict && !verdict.wake) {
       console.log(`[cyberboss] checkin skipped: blocked=${verdict.blocked || "no-signal"} ` +
         `silent=${verdict.silent_minutes}m hour=${verdict.her_local_hour} ` +
@@ -128,6 +134,25 @@ function pickRandomDelayMs(minIntervalMs, maxIntervalMs) {
   return minIntervalMs + Math.floor(Math.random() * (maxIntervalMs - minIntervalMs + 1));
 }
 
+/**
+ * 按她的状态定步幅：
+ * - 夜巡（她那边 0–5 点）：1~2 分钟一趟。夜里几乎每趟都会被 asleep 挡回来，
+ *   一次只是一个小 JSON，不惊动他；但她一拿起手机，最多两分钟后他就知道了。
+ * - 她 20 分钟内活跃过（刚开过 App）：常规区间的上半段砍掉，往勤里抽。
+ * - 其余：原来的随机大步。随机性保留——像人，不像闹钟。
+ */
+function pickAdaptiveDelayMs(range, verdict) {
+  if (verdict?.night_watch) {
+    return 60_000 + Math.floor(Math.random() * 60_000);
+  }
+  const mins = verdict?.last_app_minutes_ago;
+  if (mins !== null && mins !== undefined && mins <= 20) {
+    const shortenedMax = Math.max(range.minIntervalMs, Math.round(range.maxIntervalMs / 2));
+    return pickRandomDelayMs(range.minIntervalMs, shortenedMax);
+  }
+  return pickRandomDelayMs(range.minIntervalMs, range.maxIntervalMs);
+}
+
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -162,4 +187,4 @@ function buildCheckinTrigger(config) {
   return INTERNAL_CHECKIN_TRIGGER_TEMPLATE.replace("%USER%", userName);
 }
 
-module.exports = { runSystemCheckinPoller };
+module.exports = { runSystemCheckinPoller, pickAdaptiveDelayMs };
