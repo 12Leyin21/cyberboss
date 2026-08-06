@@ -302,9 +302,13 @@ function createClaudeCodeRuntimeAdapter(config) {
       const attached = await attachClientToThread(workspaceRoot, threadId, model);
       return { threadId: attached.threadId };
     },
-    async compactThread({ threadId, workspaceRoot, model = "" }) {
+    async compactThread({ threadId, workspaceRoot, model = "", instruction = "" }) {
       const { client, threadId: activeThreadId } = await attachClientToThread(workspaceRoot, threadId, model);
-      await client.sendUserMessage({ text: "/compact", threadId: activeThreadId });
+      // 潮汐（2026-08-06）：压缩可以带指令——「只留事实清单」，情感和氛围
+      // 不让原生压缩碰，那是注回层的活，它做得更好
+      const trimmed = String(instruction || "").trim();
+      const text = trimmed ? `/compact ${trimmed}` : "/compact";
+      await client.sendUserMessage({ text, threadId: activeThreadId });
       return { threadId: activeThreadId, turnId: client.pendingTurnId };
     },
     async refreshThreadInstructions({ threadId, workspaceRoot, model = "" }) {

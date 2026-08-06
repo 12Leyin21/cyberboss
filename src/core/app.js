@@ -43,6 +43,7 @@ const {
 const { runSystemCheckinPoller } = require("../app/system-checkin-poller");
 const { createProjectTooling } = require("../tools/create-project-tooling");
 const { getPulseEngine } = require("../services/pulse");
+const { TideKeeper } = require("../services/tide");
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MIN_LONG_POLL_TIMEOUT_MS = 2_000;
 const SESSION_EXPIRED_ERRCODE = -14;
@@ -130,6 +131,29 @@ class CyberbossApp {
       queueStore: this.systemMessageQueue,
       config: this.config,
       accountId: account.accountId,
+    });
+    // 潮汐：水位监测 → 先记账 → 原地压缩 → 三层注回。session id 永不换
+    this.tideKeeper = new TideKeeper({
+      config: this.config,
+      runtimeAdapter: this.runtimeAdapter,
+      systemMessageQueue: this.systemMessageQueue,
+      resolveTarget: () => {
+        const sessionStore = this.runtimeAdapter.getSessionStore();
+        const senderId = resolvePreferredSenderId({
+          config: this.config,
+          accountId: account.accountId,
+          explicitUser: "",
+          sessionStore,
+        });
+        const workspaceRoot = resolvePreferredWorkspaceRoot({
+          config: this.config,
+          accountId: account.accountId,
+          senderId,
+          explicitWorkspace: "",
+          sessionStore,
+        }) || this.config.workspaceRoot;
+        return { accountId: account.accountId, senderId, workspaceRoot };
+      },
     });
     const runtimeState = await this.runtimeAdapter.initialize();
     const knownContextTokens = Object.keys(this.channelAdapter.getKnownContextTokens()).length;
@@ -1519,6 +1543,8 @@ class CyberbossApp {
   async handleRuntimeEvent(event) {
     // 有活动就刷新门闸时间戳；卡死的门闸交给看门狗破拆
     this.turnGateStore.touchThread(event?.payload?.threadId);
+    // 潮汐看水位（自己吞错，绝不拖垮主流程）
+    this.tideKeeper?.onEvent(event);
     const failureReplyTarget = event?.type === "runtime.turn.failed"
       ? this.streamDelivery.resolveReplyTargetForRun({
           threadId: event?.payload?.threadId,

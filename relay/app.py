@@ -2533,6 +2533,21 @@ async def pulse_status(request: Request):
         return {"ok": False}
 
 
+# 潮汐 · 他的上下文水位。Node 的 TideKeeper 写快照，这里端给心潮的水位卡。
+TIDE_STATUS = Path(os.environ.get("RELAY_TIDE_STATUS",
+                                  str(Path(DB_PATH).parent / "tide_status.json")))
+
+
+@app.get("/tide/status")
+async def tide_status(request: Request):
+    """Context water level: current tokens, threshold, last tide."""
+    check_auth(request)
+    try:
+        return json.loads(TIDE_STATUS.read_text(encoding="utf-8"))
+    except Exception:
+        return {"ok": False}
+
+
 # ── 共读书房（2026-08-06，取经 EnhydrInk/tasogare）──────────────────────────
 # 书的正文永远在她手机里；这里是书桌——两个人的划线、批注和阅读时长落在这。
 
