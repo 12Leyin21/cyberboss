@@ -2533,6 +2533,20 @@ async def pulse_status(request: Request):
         return {"ok": False}
 
 
+PULSE_HISTORY = Path(os.environ.get("RELAY_PULSE_HISTORY",
+                                    str(Path(DB_PATH).parent / "pulse_history.json")))
+
+
+@app.get("/pulse/history")
+async def pulse_history(request: Request):
+    """Today's heart-rate curve + murmurs, for the body panel in 心潮."""
+    check_auth(request)
+    try:
+        return json.loads(PULSE_HISTORY.read_text(encoding="utf-8"))
+    except Exception:
+        return {"ok": False, "points": [], "murmurs": []}
+
+
 # 潮汐 · 他的上下文水位。Node 的 TideKeeper 写快照，这里端给心潮的水位卡。
 TIDE_STATUS = Path(os.environ.get("RELAY_TIDE_STATUS",
                                   str(Path(DB_PATH).parent / "tide_status.json")))

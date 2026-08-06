@@ -38,6 +38,11 @@ class PulseEngine {
       path.join(config.workspaceRoot || "", "pulse-pool.json"),
       path.join(config.stateDir, "pulse-pool-custom.json"),
     ];
+    // 今日心率曲线 + 碎碎念（重启后从 jsonl 恢复，跨天翻篇）
+    this.historyDay = "";
+    this.todayPoints = [];
+    this.todayMurmurs = [];
+    this.restoreTodayHistory();
     this.state = this.loadState();
     this.timer = setInterval(() => {
       try {
@@ -48,6 +53,28 @@ class PulseEngine {
       }
     }, SNAPSHOT_INTERVAL_MS);
     this.timer.unref?.();
+  }
+
+  /** 重启不丢当天：把今天的 jsonl 读回内存。 */
+  restoreTodayHistory() {
+    try {
+      const day = new Date(Date.now() + 8 * 3_600_000).toISOString().slice(0, 10);
+      this.historyDay = day;
+      const readJsonl = (file) => {
+        try {
+          return fs.readFileSync(file, "utf8").split("\n").filter(Boolean)
+            .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+            .filter(Boolean);
+        } catch {
+          return [];
+        }
+      };
+      this.todayPoints = readJsonl(path.join(this.historyDir, `${day}.jsonl`))
+        .map((row) => ({ ts: row.ts, hr: row.hr, chord: row.chord })).slice(-400);
+      this.todayMurmurs = readJsonl(path.join(this.historyDir, `murmurs-${day}.jsonl`)).slice(-100);
+    } catch {
+      // 恢复不了就从零开始
+    }
   }
 
   loadState() {
@@ -249,15 +276,22 @@ class PulseEngine {
     }
   }
 
-  /** 碎碎念史：一天一个 jsonl，给以后的身体面板当窗口素材。 */
+  /** 碎碎念史：一天一个 jsonl + 今日合订本，给身体面板当窗口素材。 */
   appendMurmurLog(text, emo, nowMs) {
     try {
       const day = new Date(nowMs + 8 * 3_600_000).toISOString().slice(0, 10);
       fs.mkdirSync(this.historyDir, { recursive: true });
+      const entry = { ts: new Date(nowMs).toISOString(), emo, text };
       fs.appendFileSync(
         path.join(this.historyDir, `murmurs-${day}.jsonl`),
-        `${JSON.stringify({ ts: new Date(nowMs).toISOString(), emo, text })}\n`,
+        `${JSON.stringify(entry)}\n`,
         "utf8");
+      this.rollHistoryDay(day);
+      this.todayMurmurs.push(entry);
+      if (this.todayMurmurs.length > 100) {
+        this.todayMurmurs = this.todayMurmurs.slice(-100);
+      }
+      this.writeHistoryFile(day);
     } catch {
       // 记不上就算了
     }
@@ -334,12 +368,43 @@ class PulseEngine {
       const reading = this.compute();
       const day = new Date(reading.nowMs + 8 * 3_600_000).toISOString().slice(0, 10);
       fs.mkdirSync(this.historyDir, { recursive: true });
+      const point = { ts: new Date(reading.nowMs).toISOString(), hr: reading.heartRate, chord: reading.chord };
       fs.appendFileSync(
         path.join(this.historyDir, `${day}.jsonl`),
-        `${JSON.stringify({ ts: new Date(reading.nowMs).toISOString(), hr: reading.heartRate, emo: reading.effectiveEmo, chord: reading.chord })}\n`,
+        `${JSON.stringify({ ...point, emo: reading.effectiveEmo })}\n`,
         "utf8");
+      this.rollHistoryDay(day);
+      this.todayPoints.push(point);
+      if (this.todayPoints.length > 400) {
+        this.todayPoints = this.todayPoints.filter((_, index) => index % 2 === 0);
+      }
+      this.writeHistoryFile(day);
     } catch {
       // 同上：添不上就算了
+    }
+  }
+
+  /** 跨天就翻篇：今日曲线和碎碎念清零重来。 */
+  rollHistoryDay(day) {
+    if (this.historyDay !== day) {
+      this.historyDay = day;
+      this.todayPoints = [];
+      this.todayMurmurs = [];
+    }
+  }
+
+  /** 心潮身体面板吃的合订本：今日心率曲线 + 今日碎碎念，落在中继目录。 */
+  writeHistoryFile(day) {
+    try {
+      const target = path.join(path.dirname(this.snapshotFile), "pulse_history.json");
+      fs.writeFileSync(target, JSON.stringify({
+        ok: true,
+        day,
+        points: this.todayPoints,
+        murmurs: this.todayMurmurs,
+      }), "utf8");
+    } catch {
+      // 记不上就算了
     }
   }
 
