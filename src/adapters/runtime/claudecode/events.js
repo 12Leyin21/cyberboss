@@ -69,6 +69,28 @@ function mapClaudeCodeMessageToRuntimeEvent(message, raw) {
           text: message.error || "❌ Runtime process exited unexpectedly",
         },
       };
+    // 思考和工具调用：以前直接落到 default 被丢掉，所以心潮那边的思考链
+    // 开关打开也永远是空的（2026-08-06 查清）。这两条只送给 App，
+    // 微信侧的路由会把它们挡掉——见 stream-delivery 的 sendSideChannel。
+    case "thinking":
+      return {
+        type: "runtime.thinking",
+        payload: {
+          threadId: message.sessionId,
+          turnId: message.turnId,
+          text: message.text,
+        },
+      };
+    case "tool.use":
+      return {
+        type: "runtime.tool.used",
+        payload: {
+          threadId: message.sessionId,
+          turnId: message.turnId,
+          toolName: formatReadableToolName(message.toolName),
+          command: formatToolCommand(message.toolName, message.input),
+        },
+      };
     case "session.id":
       return null;
     default:

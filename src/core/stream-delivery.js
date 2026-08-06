@@ -1,4 +1,6 @@
 const { sanitizeProtocolLeakText } = require("../adapters/runtime/codex/protocol-leak-monitor");
+// 一轮里最多往 App 送多少条思考/工具消息，见 sendSideChannel 的说明。
+const SIDE_CHANNEL_MAX_PER_TURN = 12;
 
 const CURRENT_REPLY_HEADER = "===== 本轮模型回复 =====";
 
@@ -143,12 +145,65 @@ class StreamDelivery {
         this.disposeRunState(state.runKey);
         return;
       }
+      case "runtime.thinking": {
+        this.sendSideChannel(threadId, turnId, {
+          kind: "thinking",
+          text: normalizeLineEndings(event.payload.text),
+        });
+        return;
+      }
+      case "runtime.tool.used": {
+        this.sendSideChannel(threadId, turnId, {
+          kind: "tool",
+          toolName: normalizeText(event.payload.toolName),
+          text: normalizeLineEndings(event.payload.command),
+        });
+        return;
+      }
       case "runtime.turn.failed":
         this.disposeRunState(buildRunKey(threadId, turnId));
         return;
       default:
         return;
     }
+  }
+
+  /**
+   * 思考链 / 工具调用的旁路。**它不是回复**：不进 items、不影响 flush、
+   * 失败只记一行日志。这条路上出任何问题都不许连累真正的回复送达。
+   *
+   * 通道没实现 sendThinking（微信就没有）时静默跳过。
+   */
+  sendSideChannel(threadId, turnId, payload) {
+    if (typeof this.channelAdapter.sendThinking !== "function") {
+      return;
+    }
+    if (!payload.text) {
+      return;
+    }
+    const state = this.stateByRunKey.get(buildRunKey(threadId, turnId));
+    if (!state?.replyTarget?.userId) {
+      return;   // 还不知道这轮该回给谁，宁可不发
+    }
+    // 每轮封顶。桌面版沐沐干一件正经活能发几十个 tool.use——不封顶的话
+    // 聊天库会被思考链灌满，App 冷启动只拉最近 300 条，真消息全被挤出去
+    // （2026-08-06 上线前想到的，没等它真发生）。超了就静默丢弃，
+    // 宁可少看几条思考，也不能把她的聊天记录冲掉。
+    state.sideChannelCount = (state.sideChannelCount || 0) + 1;
+    if (state.sideChannelCount > SIDE_CHANNEL_MAX_PER_TURN) {
+      if (state.sideChannelCount === SIDE_CHANNEL_MAX_PER_TURN + 1) {
+        console.log(`[cyberboss] thinking side-channel capped thread=${threadId} turn=${turnId}`);
+      }
+      return;
+    }
+    void Promise.resolve()
+      .then(() => this.channelAdapter.sendThinking({
+        userId: state.replyTarget.userId,
+        ...payload,
+      }))
+      .catch((error) => {
+        console.warn(`[cyberboss] thinking side-channel dropped thread=${threadId}: ${error?.message || error}`);
+      });
   }
 
   ensureRunState(threadId, turnId = "") {

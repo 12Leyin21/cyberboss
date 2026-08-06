@@ -13,6 +13,18 @@ const CLAUDE_RESUME_SESSION_TIMEOUT_MS = 8000;
 const MODEL_OVERRIDE_FILE = process.env.CYBERBOSS_MODEL_OVERRIDE_FILE
   || path.join(path.dirname(process.env.RELAY_DB || "/data/relay/relay.db"), "model_target");
 
+// 同样的路子：她在心潮的「大脑设置」里选的思考深度，见 /app/effort。
+// Claude Code 认的是 MAX_THINKING_TOKENS 这个环境变量（CLI 二进制里能搜到），
+// 所以档位在这里翻译成一个 token 预算，随进程一起传下去（2026-08-06 加）。
+const EFFORT_OVERRIDE_FILE = process.env.CYBERBOSS_EFFORT_OVERRIDE_FILE
+  || path.join(path.dirname(process.env.RELAY_DB || "/data/relay/relay.db"), "effort_target");
+const EFFORT_THINKING_TOKENS = {
+  low: "4000",
+  medium: "10000",
+  high: "20000",
+  extra: "32000",
+};
+
 function createClaudeCodeRuntimeAdapter(config) {
   const sessionStore = new SessionStore({ filePath: config.sessionsFile, runtimeId: "claudecode" });
   const clientsByWorkspace = new Map();
@@ -59,11 +71,36 @@ function createClaudeCodeRuntimeAdapter(config) {
     return readModelOverride() || configuredModel || normalizeText(model);
   }
 
+  // 她当场选的思考深度。和模型一样每轮现读——换档时 ensureClient 会带着
+  // 同一个会话 ID --resume 重开进程，上下文不丢。读不到就当没覆盖，
+  // 绝不能因为这个文件出问题就拦住一轮对话。
+  function readEffortOverride() {
+    try {
+      const raw = fs.readFileSync(EFFORT_OVERRIDE_FILE, "utf8").trim().toLowerCase();
+      return Object.prototype.hasOwnProperty.call(EFFORT_THINKING_TOKENS, raw) ? raw : "";
+    } catch {
+      return "";
+    }
+  }
+
+  function buildClaudeEnv() {
+    const env = filterClaudeCodeEnv(process.env);
+    const effort = readEffortOverride();
+    if (effort) {
+      env.MAX_THINKING_TOKENS = EFFORT_THINKING_TOKENS[effort];
+    }
+    return { env, effort };
+  }
+
   async function ensureClient(workspaceRoot, model = "") {
     const desiredModel = resolveModel(model);
+    const { env: claudeEnv, effort: desiredEffort } = buildClaudeEnv();
     const existing = clientsByWorkspace.get(workspaceRoot);
     if (existing) {
-      if (normalizeText(existing.model) === desiredModel) {
+      // 模型和 effort 任何一个变了都要重开进程——effort 是启动时读的环境变量，
+      // 光改文件不重启等于没改。
+      if (normalizeText(existing.model) === desiredModel
+          && normalizeText(existing.cyberbossEffort || "") === desiredEffort) {
         return existing;
       }
       await closeWorkspaceClient(workspaceRoot);
@@ -78,7 +115,7 @@ function createClaudeCodeRuntimeAdapter(config) {
     const client = new ClaudeCodeProcessClient({
       command: config.claudeCommand || "claude",
       cwd: workspaceRoot,
-      env: filterClaudeCodeEnv(process.env),
+      env: claudeEnv,
       model: desiredModel,
       permissionMode: config.claudePermissionMode || "default",
       disableVerbose: Boolean(config.claudeDisableVerbose),
@@ -115,6 +152,8 @@ function createClaudeCodeRuntimeAdapter(config) {
         globalListener(mapped, raw);
       }
     });
+    // 记在客户端上，下一轮好比对（ProcessClient 本身不认识 effort 这个概念）
+    client.cyberbossEffort = desiredEffort;
     clientsByWorkspace.set(workspaceRoot, client);
     return client;
   }

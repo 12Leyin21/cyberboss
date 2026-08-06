@@ -157,6 +157,11 @@ BRAIN_FILE = Path(os.environ.get("RELAY_BRAIN_FILE", str(Path(__file__).parent /
 # on every turn; empty file = fall back to CYBERBOSS_CLAUDE_MODEL.
 MODEL_FILE = Path(os.environ.get("RELAY_MODEL_FILE", str(Path(BRAIN_FILE).parent / "model_target")))
 MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,60}$")
+# 思考深度档位。她在心潮 App 的「大脑设置」里选，cyberboss 每轮现读这个文件
+# 并翻译成 MAX_THINKING_TOKENS 传给 Claude Code 进程（2026-08-06 加）。
+# 空文件 = 没覆盖，跑 cyberboss 自己的默认。
+EFFORT_FILE = Path(os.environ.get("RELAY_EFFORT_FILE", str(Path(BRAIN_FILE).parent / "effort_target")))
+EFFORT_LEVELS = ("low", "medium", "high", "extra")
 
 # --- who is in the room (2026-07-28) ---------------------------------------
 # Until now the room had exactly two seats and `direction` was enough to say who
@@ -792,6 +797,15 @@ class RhythmStore:
 
 
 rhythm = RhythmStore()
+
+
+def effort_override() -> str:
+    """她选的思考深度档位；读不到或不认识就当没覆盖。"""
+    try:
+        value = EFFORT_FILE.read_text(encoding="utf-8").strip().lower()
+        return value if value in EFFORT_LEVELS else ""
+    except OSError:
+        return ""
 
 
 def model_override() -> str:
@@ -2666,6 +2680,29 @@ async def set_model(request: Request):
         raise HTTPException(status_code=400, detail="model id looks wrong")
     MODEL_FILE.write_text(model, encoding="utf-8")
     return {"model": model}
+
+
+@app.get("/app/effort")
+async def get_effort(request: Request):
+    """Which thinking-depth tier she picked in the App. Empty = no override."""
+    check_auth(request)
+    return {"effort": effort_override(), "levels": list(EFFORT_LEVELS)}
+
+
+@app.post("/app/effort")
+async def set_effort(request: Request):
+    """Set the thinking-depth tier. Empty string clears the override.
+
+    cyberboss reads this file every turn and maps it onto MAX_THINKING_TOKENS
+    for the Claude Code process, so only the known tiers are accepted here.
+    """
+    check_auth(request)
+    body = await request.json()
+    effort = str(body.get("effort") or "").strip().lower()
+    if effort and effort not in EFFORT_LEVELS:
+        raise HTTPException(status_code=400, detail=f"effort must be one of {EFFORT_LEVELS}")
+    EFFORT_FILE.write_text(effort, encoding="utf-8")
+    return {"effort": effort}
 
 
 @app.get("/app/loop_config")

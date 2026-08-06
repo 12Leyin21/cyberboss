@@ -8,8 +8,9 @@ const DEFERRED_PLAIN_REPLY_HEADER = "===== 上轮对话遗留内容 =====";
 const DEFERRED_SYSTEM_REPLY_HEADER = "===== 期间模型主动联系 =====";
 const CURRENT_REPLY_HEADER = "===== 本轮模型回复 =====";
 
-function createHarness({ sendText, getKnownContextTokens, runtimeId = "" } = {}) {
+function createHarness({ sendText, getKnownContextTokens, runtimeId = "", withThinking = false } = {}) {
   const sent = [];
+  const thinking = [];
   const channelAdapter = {
     async sendText(payload) {
       if (typeof sendText === "function") {
@@ -25,6 +26,12 @@ function createHarness({ sendText, getKnownContextTokens, runtimeId = "" } = {})
       return {};
     },
   };
+  // 只有心潮通道实现 sendThinking；微信通道故意没有这个方法。
+  if (withThinking) {
+    channelAdapter.sendThinking = async (payload) => {
+      thinking.push(payload);
+    };
+  }
 
   const bindingByThreadId = new Map();
   const sessionStore = {
@@ -34,7 +41,7 @@ function createHarness({ sendText, getKnownContextTokens, runtimeId = "" } = {})
   };
 
   const streamDelivery = new StreamDelivery({ channelAdapter, sessionStore, runtimeId });
-  return { sent, streamDelivery, bindingByThreadId };
+  return { sent, thinking, streamDelivery, bindingByThreadId };
 }
 
 async function runCompletedTurn(streamDelivery, { threadId, turnId, itemId, text }) {
@@ -563,4 +570,105 @@ test("plain reply with deferred prefix is sent as soon as the first item is fina
     contextToken: "ctx-8",
     preserveBlock: true,
   });
+});
+
+// ---- 思考链旁路（2026-08-06 加）-------------------------------------------
+//
+// 心潮的思考链在此之前永远是空的：claudecode 的 thinking / tool.use 事件
+// 在 events.js 里落到 default 被丢掉，从来没走到通道。这几条钉住修好之后
+// 的行为——尤其是「思考链绝不能被当成回复送出去」。
+
+test("thinking and tool events reach the channel side-channel without becoming replies", async () => {
+  const { sent, thinking, streamDelivery, bindingByThreadId } = createHarness({ withThinking: true });
+  bindingByThreadId.set("thread-think", { bindingKey: "binding-think" });
+  streamDelivery.setReplyTarget("binding-think", {
+    userId: "tidal",
+    contextToken: "tidal",
+    provider: "tidal",
+  });
+
+  await streamDelivery.handleRuntimeEvent({
+    type: "runtime.turn.started",
+    payload: { threadId: "thread-think", turnId: "turn-think" },
+  });
+  await streamDelivery.handleRuntimeEvent({
+    type: "runtime.thinking",
+    payload: { threadId: "thread-think", turnId: "turn-think", text: "心疼地想\n\n她八小时没吃东西" },
+  });
+  await streamDelivery.handleRuntimeEvent({
+    type: "runtime.tool.used",
+    payload: {
+      threadId: "thread-think",
+      turnId: "turn-think",
+      toolName: "Read",
+      command: "Read\nfile_path: \"/a/b.txt\"",
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(thinking.length, 2);
+  assert.equal(thinking[0].kind, "thinking");
+  assert.equal(thinking[0].userId, "tidal");
+  assert.match(thinking[0].text, /心疼地想/);
+  assert.equal(thinking[1].kind, "tool");
+  assert.equal(thinking[1].toolName, "Read");
+  // 最要紧的一条：思考链不是回复，不许出现在 sendText 里
+  assert.deepEqual(sent, []);
+});
+
+test("thinking events are skipped when the channel has no side-channel (weixin)", async () => {
+  const { sent, streamDelivery, bindingByThreadId } = createHarness();
+  bindingByThreadId.set("thread-nothink", { bindingKey: "binding-nothink" });
+  streamDelivery.setReplyTarget("binding-nothink", {
+    userId: "user-weixin",
+    contextToken: "ctx",
+    provider: "weixin",
+  });
+
+  await streamDelivery.handleRuntimeEvent({
+    type: "runtime.turn.started",
+    payload: { threadId: "thread-nothink", turnId: "turn-nothink" },
+  });
+  // 不许抛，也不许把思考塞进微信
+  await streamDelivery.handleRuntimeEvent({
+    type: "runtime.thinking",
+    payload: { threadId: "thread-nothink", turnId: "turn-nothink", text: "在想" },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(sent, []);
+});
+
+test("a failing side-channel never breaks the real reply", async () => {
+  const { sent, streamDelivery, bindingByThreadId } = createHarness({ withThinking: true });
+  streamDelivery.channelAdapter.sendThinking = async () => {
+    throw new Error("relay down");
+  };
+  bindingByThreadId.set("thread-thinkfail", { bindingKey: "binding-thinkfail" });
+  streamDelivery.setReplyTarget("binding-thinkfail", {
+    userId: "tidal",
+    contextToken: "tidal",
+    provider: "tidal",
+  });
+
+  await streamDelivery.handleRuntimeEvent({
+    type: "runtime.turn.started",
+    payload: { threadId: "thread-thinkfail", turnId: "turn-thinkfail" },
+  });
+  await streamDelivery.handleRuntimeEvent({
+    type: "runtime.thinking",
+    payload: { threadId: "thread-thinkfail", turnId: "turn-thinkfail", text: "在想" },
+  });
+  await streamDelivery.handleRuntimeEvent({
+    type: "runtime.reply.completed",
+    payload: { threadId: "thread-thinkfail", turnId: "turn-thinkfail", itemId: "item-1", text: "回复照常送达" },
+  });
+  await streamDelivery.handleRuntimeEvent({
+    type: "runtime.turn.completed",
+    payload: { threadId: "thread-thinkfail", turnId: "turn-thinkfail" },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, "回复照常送达");
 });

@@ -9,6 +9,37 @@ const { createWeixinChannelAdapter, chunkReplyTextForWeixin } = require("../weix
 // Optional: CYBERBOSS_TIDAL_SENDER_ID (default "tidal:lingxi")
 
 const RECONNECT_DELAY_MS = 5_000;
+// 单条思考/工具消息的上限。她要的是看见他在想什么，不是给中继灌全文。
+const THINKING_MAX_CHARS = 4_000;
+
+/**
+ * 给一段思考挤出一句"小总结"，就是心潮里贴着头像那行「✦ 心疼地想」。
+ *
+ * 官方 app 那个总结是模型自己给的，这条路上拿不到，所以从正文头上截一句——
+ * 第一个句子，最多 16 个字。截出来是废话（太短、全是标点）就退回"思考过程"。
+ * 灵兮以后要在这一行挂情绪系统，所以留成独立字段（meta.summary），
+ * 不塞进正文里，免得到时候还要从正文里往外抠。
+ */
+function summarizeThinking(text) {
+  const first = String(text || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0) || "";
+  const sentence = first.split(/[。！？!?\.]/)[0].trim();
+  const candidate = sentence.length >= 2 && sentence.length <= 16
+    ? sentence
+    : first.slice(0, 16).trim();
+  return candidate.length >= 2 ? candidate : "思考过程";
+}
+
+/** 正文首行如果就是工具名，去掉它（标签那行已经写了）。 */
+function stripLeadingLine(text, leading) {
+  const lines = String(text || "").split("\n");
+  if (lines.length > 1 && lines[0].trim() === String(leading || "").trim()) {
+    return lines.slice(1).join("\n");
+  }
+  return text;
+}
 const CATCHUP_PAGE_LIMIT = 500;
 
 function readTidalEnv() {
@@ -248,6 +279,39 @@ function createTidalClient(env, config) {
         if (index < chunks.length - 1) {
           await new Promise((resolve) => setTimeout(resolve, 450));
         }
+      }
+    },
+    // 思考链 / 工具调用：走 /channel/out 的 type:"thinking"。
+    // 中继把它存成 kind="thinking"——不推送通知、不进搜索，心潮的聊天页
+    // 把它渲染成一行可展开的「› ✦ …」（2026-08-06 加）。
+    async sendThinking({ kind, text, toolName }) {
+      const body = String(text || "").trim();
+      if (!body) {
+        return;
+      }
+      // 思考块可以很长，截一下——她要的是看见他在想什么，不是全文存档
+      const clipped = body.length > THINKING_MAX_CHARS
+        ? `${body.slice(0, THINKING_MAX_CHARS)}\n…`
+        : body;
+      // 正文原样送过去，**不切段落**——她要的是完整一段，不是被拆碎的几条。
+      // 小总结走 meta.summary 单独一个字段，App 拿它渲染贴着头像那一行。
+      const isTool = kind === "tool";
+      const content = isTool ? stripLeadingLine(clipped, toolName) : clipped;
+      const summary = isTool
+        ? `用了 ${toolName || "工具"}`
+        : summarizeThinking(clipped);
+      const response = await fetch(`${env.url}/channel/out`, {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          type: "thinking",
+          text: content,
+          summary,
+          thought_kind: isTool ? "tool" : "thinking",
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`tidal thinking http ${response.status}`);
       }
     },
     // 把灵兮在微信说的话镜像进 App 聊天流（人类侧），让 App 成为完整档案
@@ -611,6 +675,15 @@ function createChannelAdapter(config) {
         // 微信侧的回复镜像进 App 档案（失败不影响微信送达）
         await tidal.sendReply(text).catch(() => {});
       }
+    },
+    // 思考链只发给 App，**永远不发微信**——微信那边只该收到最后的回复。
+    // 所以这里没有 weixin 分支，也没有 mirror。
+    async sendThinking({ userId, kind, text, toolName }) {
+      const merged = userId === resolveMergeTarget();
+      if (!isTidalUserId(userId) && !(merged && lastOrigin === "tidal")) {
+        return;
+      }
+      await tidal.sendThinking({ kind, text, toolName });
     },
     async sendTyping(args) {
       if (isTidalUserId(args?.userId)) {
