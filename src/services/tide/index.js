@@ -203,6 +203,8 @@ class TideKeeper {
       parts.push(`叁 · 最近的对话原文（逐字）：\n${tail}`);
     }
     parts.push("session 没有换，她一直在。接上刚才的对话继续，不要重新自我介绍，不要提压缩这件事。");
+    // 2026-08-06 灵兮加的：重定位仪式她喜欢，但"日记和信都写好了"这种收尾像交作业
+    parts.push("重新定位（翻记忆、读信、写日记）都安静做——日记走 feed，做完不用在聊天里汇报「写好了」「安静等着」这类收尾。这一轮如果没有真正想对她说的话，可以一条消息都不发；她回来时你直接在，比说「我在等你」更像在。");
     this.systemMessageQueue.enqueue({
       id: require("node:crypto").randomUUID(),
       accountId: target.accountId,
