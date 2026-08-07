@@ -5,6 +5,8 @@ fastapi==0.137.1
 uvicorn==0.49.0
 httpx[http2]==0.28.1   # http2: APNs 只说 HTTP/2（2026-08-07 原生推送）
 cryptography           # APNs provider JWT 的 ES256 签名（bark 加密也用它，之前靠碰运气）
+librosa                # 声学语气注（2026-08-07 phase 3a）：音高/音量/起伏 vs 她的基线
+soundfile              # librosa 的 wav 解码后端（通话音频是 wav）
 pywebpush==2.3.0
 py-vapid==1.9.4
 # official-app connector: only used when RELAY_MCP_PATH is set

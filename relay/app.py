@@ -909,7 +909,7 @@ async def voip_ring(reason: str, call_id: str) -> int:
 
 
 # 通话状态：接通置位、挂断清零；半小时没动静自动当作已结束（别把语音模式焊死）
-CALL_STATE = {"active": False, "call_id": "", "since": 0.0}
+CALL_STATE = {"active": False, "call_id": "", "since": 0.0, "direction": "incoming"}
 
 
 def call_active() -> bool:
@@ -1882,10 +1882,15 @@ async def call_event(request: Request):
     body = await request.json()
     event = str(body.get("event") or "").strip()
     call_id = str(body.get("call_id") or "").strip()
-    if event == "answered":
-        CALL_STATE.update(active=True, call_id=call_id, since=time.time())
+    if event in ("answered", "outgoing"):
+        CALL_STATE.update(active=True, call_id=call_id, since=time.time(),
+                          direction="outgoing" if event == "outgoing" else "incoming")
+        opening = ("📞 她打电话来了——你已经接起来了（你永远秒接）。先开口，"
+                   "第一句就当拿起听筒那声。" if event == "outgoing"
+                   else "📞 接通了，她在听。")
         note = save_message("in", "user",
-            "📞 接通了，她在听。从现在起你说的每句话都会变成语音进她耳朵："
+            opening +
+            "从现在起你说的每句话都会变成语音进她耳朵："
             "口语，短句，一次一两句就停，等她回；别写动作叙述和长段落——"
             "这是打电话，不是写信。她按住说话你才听得到她。", {"user": "human", "channel": "通话", "call": True})
         if brain_target() == "loop":
@@ -1906,13 +1911,14 @@ async def call_event(request: Request):
             await broadcast(plugin_subs, plugin_payload(note))
         return {"ok": True, "call_active": False}
     if event == "ended":
+        direction = CALL_STATE.get("direction") or "incoming"
         CALL_STATE.update(active=False, call_id="", since=0.0)
         seconds = int(body.get("duration_seconds") or 0)
         minutes, secs = divmod(max(0, seconds), 60)
         pretty = f"{minutes} 分 {secs} 秒" if minutes else f"{secs} 秒"
         # 通话历史卡片（App 的通话历史房间按 kind=call 渲染）
         call_msg = save_message("out", "call", f"📞 通话 {pretty}",
-                                {"duration_seconds": seconds, "direction": "incoming"})
+                                {"duration_seconds": seconds, "direction": direction})
         await broadcast(app_subs, app_payload(call_msg))
         note = save_message("in", "user",
             f"📞 挂断了，这通电话打了 {pretty}。回到打字聊天，不用再用通话腔。",
@@ -2913,7 +2919,20 @@ async def app_voice(request: Request):
     stored = Path(upload["url"]).name
     local_audio = UPLOAD_DIR / stored
     transcript = transcribe_audio(local_audio, mime)
+    # 声学语气注（2026-08-07 phase 3a）：librosa 特征 vs 她的滚动基线。
+    # 正常一个字不说；wav（通话）能进来，m4a（聊天语音条）暂时解不开会静默跳过
+    tone_note = None
+    if transcript:
+        try:
+            from tone import analyze_tone
+            tone_note = await asyncio.to_thread(
+                analyze_tone, local_audio, len(transcript),
+                Path(DB_PATH).parent / "tone_baseline.json")
+        except Exception as exc:
+            print(f"[tone] skipped: {exc}")
     text = ("🎤 " + transcript) if transcript else f"🎤 [语音] {HUMAN_NAME}发来一段语音；当前 relay 未配置 ASR，音频已作为附件送达。"
+    if tone_note:
+        text += f"\n〔她的声音：{tone_note}〕"
     meta = {
         "user": "human",
         "voice": True,
@@ -2921,6 +2940,10 @@ async def app_voice(request: Request):
         "attachments": [upload],
         "transcribed": bool(transcript),
     }
+    # 通话中的话不进聊天流（2026-08-07 灵兮定：像真电话，只留通话时长卡）。
+    # 打上 call 标记，App 聊天页跳过它们；他那边照常收到
+    if call_active():
+        meta["call"] = True
     msg = save_message("in", "voice", text, meta)
     await broadcast(plugin_subs, plugin_payload(msg))
     await broadcast(app_subs, app_payload(msg))
