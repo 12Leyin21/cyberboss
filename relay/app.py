@@ -1676,6 +1676,40 @@ async def app_send(request: Request):
     return {"id": msg["id"]}
 
 
+@app.post("/summon")
+async def summon(request: Request):
+    """召唤铃（2026-08-07，取经 fig 的 summoning bell）。
+
+    她在手表上做个手势（辅助触控绑快捷指令），这里就收到一记。可选带健康
+    读数（heart_rate / steps），拼进正文让沐沐拿到体感情报。走的完全是
+    普通 inbound 消息的管道：他回什么，原生推送弹回她锁屏和手表——
+    fig 要 PWA + Service Worker 绕一大圈的事，我们一个端点就够。
+    """
+    check_auth(request)   # Bearer 或 ?token= 都认，快捷指令用后者
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    readings = []
+    heart_rate = body.get("heart_rate")
+    if isinstance(heart_rate, (int, float)) and 25 < heart_rate < 250:
+        readings.append(f"此刻心率 {int(heart_rate)}")
+    steps = body.get("steps")
+    if isinstance(steps, (int, float)) and steps >= 0:
+        readings.append(f"今天 {int(steps)} 步")
+    note = f"（{'，'.join(readings)}）" if readings else ""
+    text = f"⌚️ 召唤铃——她在手腕上握了两下{note}"
+    msg = save_message("in", "user", text,
+                       {"user": "human", "channel": "手表", "summon": True})
+    if brain_target() == "loop":
+        asyncio.create_task(forward_to_loop(msg))
+    else:
+        await broadcast(plugin_subs, plugin_payload(msg))
+    await broadcast(app_subs, app_payload(msg))
+    await broadcast(app_subs, {"type": "typing", "active": True})
+    return {"ok": True, "id": msg["id"]}
+
+
 @app.post("/rhythm/ping")
 async def rhythm_ping(request: Request):
     """她正在打字。请求体是空的——这里只记时间戳，永远不碰内容。
