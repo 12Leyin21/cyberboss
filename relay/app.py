@@ -795,6 +795,7 @@ APNS_HOSTS = {"sandbox": "https://api.sandbox.push.apple.com",
               "production": "https://api.push.apple.com"}
 
 _apns_jwt_cache = {"token": "", "ts": 0.0}
+_APNS_LAST_ERROR = {"value": "", "ts": ""}   # 最近一次 APNs 拒收的原因（排障窗口）
 
 
 def apns_enabled() -> bool:
@@ -853,6 +854,8 @@ async def _apns_send_one(token: str, known_env: str, payload: dict,
             reason = resp.json().get("reason", "")
         except Exception:
             pass
+        _APNS_LAST_ERROR["value"] = f"{push_type}/{env}: http {resp.status_code} {reason}"
+        _APNS_LAST_ERROR["ts"] = now_iso()
         if resp.status_code == 410 or reason == "Unregistered":
             with db() as conn:
                 conn.execute("DELETE FROM push_tokens WHERE token = ?", (token,))
@@ -1938,6 +1941,18 @@ async def push_register(request: Request):
                ON CONFLICT(token) DO UPDATE SET env = excluded.env, platform = excluded.platform""",
             (token, platform, env, now_iso()))
     return {"ok": True, "apns_ready": apns_enabled()}
+
+
+@app.get("/push/state")
+async def push_state(request: Request):
+    """排障透视窗：几条线、各是什么类型、APNs 最近一次拒收说了什么。只读。"""
+    check_auth(request)
+    with db() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT platform, env, substr(token,1,8) AS token8, created, last_ok "
+            "FROM push_tokens ORDER BY platform").fetchall()]
+    return {"ok": True, "apns_ready": apns_enabled(), "tokens": rows,
+            "last_apns_error": _APNS_LAST_ERROR, "call_active": call_active()}
 
 
 @app.post("/push/test")
