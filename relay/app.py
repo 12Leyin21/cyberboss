@@ -1688,6 +1688,43 @@ app.add_middleware(
 )
 
 
+@app.get("/admin/backup")
+async def admin_backup(request: Request, part: str = "data"):
+    """搬家通道（2026-08-07 Render→VPS）：带鉴权把家当打包流式下载。
+    part=data → RELAY 数据目录整包（数据库/上传/照片/声学基线/潮汐日志）
+    part=home → ~/.cyberboss（微信会话、指令模板、日记钟）
+    part=env  → 环境变量 JSON（新家逐项核对用）
+    迁移完成后这个端点随旧家一起退役。"""
+    check_auth(request)
+    if part == "env":
+        return dict(os.environ)
+    if part == "data":
+        target = Path(DB_PATH).resolve().parent
+    elif part == "home":
+        target = Path(os.path.expanduser("~/.cyberboss"))
+    else:
+        raise HTTPException(status_code=400, detail="part must be data/home/env")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail=f"{target} not found")
+    proc = subprocess.Popen(
+        ["tar", "czf", "-", "-C", str(target.parent), target.name],
+        stdout=subprocess.PIPE)
+
+    def stream():
+        try:
+            while True:
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            proc.stdout.close()
+            proc.wait()
+
+    return StreamingResponse(stream(), media_type="application/gzip", headers={
+        "Content-Disposition": f"attachment; filename={part}.tar.gz"})
+
+
 @app.get("/healthz")
 async def healthz():
     with db() as conn:
