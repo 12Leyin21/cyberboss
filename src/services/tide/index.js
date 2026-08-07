@@ -39,6 +39,11 @@ class TideKeeper {
     this.statusFile = relayDb
       ? path.join(path.dirname(relayDb), "tide_status.json")
       : path.join(config.stateDir, "tide_status.json");
+    // 潮汐记录（2026-08-07 灵兮要的）：每次涨潮记一行，中继 /tide/log 端给心潮
+    this.logFile = relayDb
+      ? path.join(path.dirname(relayDb), "tide_log.jsonl")
+      : path.join(config.stateDir, "tide_log.jsonl");
+    this.lastTideLevel = 0;
     this.levelByThread = new Map();
     this.inFlight = false;
     this.compactWatch = null;   // { threadId, since } 等这个线程的下一次 turn.completed
@@ -137,6 +142,7 @@ class TideKeeper {
     if (!relay) return;   // 没接中继就没有账本，不做潮汐
 
     this.inFlight = true;
+    this.lastTideLevel = level;
     console.log(`[tide] high water: thread=${threadId} ctx=${level} >= ${THRESHOLD_TOKENS}`);
     try {
       await this.runTide(threadId);
@@ -217,6 +223,16 @@ class TideKeeper {
     });
     this.state.cooldownUntil = Date.now() + AFTER_TIDE_COOLDOWN_MS;
     this.saveState();
+    // 潮汐记录：这一潮几点涨的、当时水多高。记不上不碍事
+    try {
+      fs.appendFileSync(this.logFile, `${JSON.stringify({
+        ts: new Date().toISOString(),
+        tokens: this.lastTideLevel || 0,
+        threshold: THRESHOLD_TOKENS,
+      })}\n`, "utf8");
+    } catch (error) {
+      console.error(`[tide] log append failed: ${error.message}`);
+    }
     console.log("[tide] restore injected; tide complete");
   }
 

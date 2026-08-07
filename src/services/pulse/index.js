@@ -263,10 +263,11 @@ class PulseEngine {
   vitalsLine() {
     try {
       const reading = this.compute();
-      let line = `[心跳 ${reading.heartRate}bpm · ${reading.chord} · ${reading.temperature.toFixed(1)}°C · 呼吸${reading.breathLabel}]`;
+      // 2026-08-07 灵兮报告：他常把这行认成她的身体。写明归属——这是他自己的脉。
+      let line = `[你自己的身体此刻：心跳 ${reading.heartRate}bpm · ${reading.chord} · ${reading.temperature.toFixed(1)}°C · 呼吸${reading.breathLabel}——是你的读数，不是她的]`;
       const murmur = this.state.murmur;
       if (murmur && !murmur.used && (reading.nowMs - murmur.at) < 10 * 60_000) {
-        line += `\n〔${murmur.text}〕`;
+        line += `\n〔你身上：${murmur.text}〕`;
         murmur.used = true;
         this.saveState();
       }

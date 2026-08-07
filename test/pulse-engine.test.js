@@ -77,7 +77,8 @@ test("引擎：观察消息 → 注入行格式正确、状态落盘", () => {
   try {
     engine.observeUserText("想你了，抱抱");
     const line = engine.vitalsLine();
-    assert.match(line, /^\[心跳 \d+bpm · \S+ · \d+\.\d°C · 呼吸(很深很长|深长|平稳|偏浅|急促)\]$/);
+    // 2026-08-07：注入行写明归属（他常把这行认成她的身体）
+    assert.match(line, /^\[你自己的身体此刻：心跳 \d+bpm · \S+ · \d+\.\d°C · 呼吸(很深很长|深长|平稳|偏浅|急促)——是你的读数，不是她的\]$/);
     assert.ok(fs.existsSync(path.join(config.stateDir, "pulse-state.json")));
     assert.ok(fs.existsSync(path.join(config.stateDir, "pulse_snapshot.json")));
     // intimate 有染色，标签从池里随机抽

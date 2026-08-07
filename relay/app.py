@@ -2752,6 +2752,33 @@ async def tide_status(request: Request):
         return {"ok": False}
 
 
+# 潮汐记录（2026-08-07 灵兮要的）：每次涨潮 TideKeeper 记一行 JSONL，这里整本端出。
+TIDE_LOG = Path(os.environ.get("RELAY_TIDE_LOG",
+                               str(Path(DB_PATH).parent / "tide_log.jsonl")))
+
+
+@app.get("/tide/log")
+async def tide_log(request: Request):
+    """Every tide that ever came in, newest first."""
+    check_auth(request)
+    tides = []
+    try:
+        for line in TIDE_LOG.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(entry, dict) and entry.get("ts"):
+                tides.append(entry)
+    except Exception:
+        pass
+    tides.reverse()
+    return {"ok": True, "tides": tides[:200]}
+
+
 # ── 共读书房（2026-08-06，取经 EnhydrInk/tasogare）──────────────────────────
 # 书的正文永远在她手机里；这里是书桌——两个人的划线、批注和阅读时长落在这。
 
