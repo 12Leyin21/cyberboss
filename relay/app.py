@@ -972,21 +972,24 @@ CALL_TTS_SETTINGS = {"stability": 0.42, "similarity_boost": 0.85,
                      "style": 0.35, "use_speaker_boost": True}
 
 
-def _call_tts(text: str) -> bytes:
+def _call_tts(text: str, previous_text: str = "", next_text: str = "",
+              force_model: str = "") -> bytes:
     if ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
-        model = os.environ.get("ELEVENLABS_CALL_MODEL", "eleven_flash_v2_5")
+        model = force_model or os.environ.get("ELEVENLABS_CALL_MODEL", "eleven_flash_v2_5")
         # v3 走语音条同款默认参数——她最爱的就是那个声音；
         # 那套"电话腔"参数是给 flash/multilingual 调的，别喂给 v3
         settings = None if model.startswith("eleven_v3") else dict(CALL_TTS_SETTINGS)
-        return elevenlabs_tts_mp3(text, model=model, settings=settings)
+        return elevenlabs_tts_mp3(text, model=model, settings=settings,
+                                  previous_text=previous_text, next_text=next_text)
     return minimax_tts_mp3(text)
 
 
 async def _emit_call_voice(spoken: str, extra_meta: dict | None = None,
-                           audio: bytes | None = None) -> dict:
+                           audio: bytes | None = None, previous_text: str = "",
+                           next_text: str = "") -> dict:
     """一句通话语音落库+广播。audio 不传就现合成（在线程里，不卡事件循环）。"""
     if audio is None:
-        audio = await asyncio.to_thread(_call_tts, spoken)
+        audio = await asyncio.to_thread(_call_tts, spoken, previous_text, next_text)
     upload = save_upload_bytes(audio, f"mu-call-{int(time.time()*1000)}.mp3",
                                "audio/mpeg", "voice")
     voice_meta = {"voice": True, "tts": True, "call": True,
@@ -998,11 +1001,18 @@ async def _emit_call_voice(spoken: str, extra_meta: dict | None = None,
 
 
 async def quick_ack(her_msg_id: int, transcript: str) -> None:
-    """快脑搭腔：DeepSeek 出一句 → 撞车检查 → TTS → 落库。全程失败静默。"""
+    """快脑搭腔：等 5 秒 → 撞车检查 → DeepSeek 出一句 → 再查 → flash TTS → 落库。
+
+    2026-08-07 首夜实测改版：沐沐手快时搭腔和正事背靠背说重复话——
+    所以搭腔只在真冷场（5 秒无回音）时出现，且永远用 flash 合成（快是它
+    唯一的职责）。全程失败静默。"""
     try:
         card = _persona_call_card()
         if not card:
             return
+        await asyncio.sleep(5)
+        if not call_active() or callflow.ack_is_stale(_call_rows_since(her_msg_id), her_msg_id):
+            return   # 5 秒内正事到了/她又开口了：不需要搭腔，隐身
         messages = callflow.build_ack_messages(card, _call_history_turns(), transcript)
         import httpx as _httpx
         async with _httpx.AsyncClient(timeout=8) as client:
@@ -1019,7 +1029,7 @@ async def quick_ack(her_msg_id: int, transcript: str) -> None:
         # 撞车门控①：合成前——正事已到或她又开口，这条搭腔已经过时
         if callflow.ack_is_stale(_call_rows_since(her_msg_id), her_msg_id):
             return
-        audio = await asyncio.to_thread(_call_tts, ack)
+        audio = await asyncio.to_thread(_call_tts, ack, "", "", "eleven_flash_v2_5")
         # 撞车门控②：合成完再看一眼（TTS 这一两秒里正事可能刚好到了）
         if not call_active() or callflow.ack_is_stale(_call_rows_since(her_msg_id), her_msg_id):
             return
@@ -1501,7 +1511,8 @@ def _looks_pure_english(text: str) -> bool:
     return has_latin and not has_cjk
 
 
-def elevenlabs_tts_mp3(text: str, model: str = "", settings: dict | None = None) -> bytes:
+def elevenlabs_tts_mp3(text: str, model: str = "", settings: dict | None = None,
+                       previous_text: str = "", next_text: str = "") -> bytes:
     if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
         raise HTTPException(status_code=503, detail="elevenlabs tts not configured")
     clean = (text or "").strip()
@@ -1521,6 +1532,12 @@ def elevenlabs_tts_mp3(text: str, model: str = "", settings: dict | None = None)
         # stability 抬高：每句都贴着她挑中的那个发挥走，少抽风（2026-08-07）
         "voice_settings": settings or {"stability": 0.62, "similarity_boost": 0.8},
     }
+    # 前后文提示（2026-08-07 晚）：通话把整段切成短句逐句合成，v3 拿到光秃秃的
+    # 短句会念成播音腔——把前后句喂给它，语调就连回一段自然说话
+    if previous_text:
+        payload["previous_text"] = previous_text[-500:]
+    if next_text:
+        payload["next_text"] = next_text[:500]
     req = urllib.request.Request(
         url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -1824,7 +1841,8 @@ async def channel_out(request: Request):
     if kind == "reply" and call_active() and text.strip():
         sentences = callflow.split_sentences(text.strip())
         try:
-            first_audio = await asyncio.to_thread(_call_tts, sentences[0])
+            first_audio = await asyncio.to_thread(
+                _call_tts, sentences[0], "", "".join(sentences[1:]))
         except Exception as exc:
             print(f"[call] tts failed, falling back to text: {exc}")
         else:
@@ -1835,11 +1853,14 @@ async def channel_out(request: Request):
                 gen_at_start = CALL_STATE.get("gen", 0)
 
                 async def _pipeline_rest():
-                    for seg in rest:
+                    for offset, seg in enumerate(rest, start=1):
                         if not call_active() or CALL_STATE.get("gen", 0) != gen_at_start:
                             break   # 她开口了/挂了：后面的句子咽回去
                         try:
-                            await _emit_call_voice(seg)
+                            await _emit_call_voice(
+                                seg,
+                                previous_text="".join(sentences[:offset]),
+                                next_text="".join(sentences[offset + 1:]))
                         except Exception as exc:
                             # 这句合成失败：落文字保底（app 会跳过没音频的），继续下一句
                             print(f"[call] pipeline tts failed: {exc}")
