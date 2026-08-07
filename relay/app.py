@@ -1702,8 +1702,11 @@ async def admin_backup(request: Request, part: str = "data"):
         target = Path(DB_PATH).resolve().parent
     elif part == "home":
         target = Path(os.path.expanduser("~/.cyberboss"))
+    elif part == "all":
+        # 整个持久盘（HOME=/data）：中继数据 + .cyberboss + .claude 凭证，一锅端
+        target = Path(os.path.expanduser("~"))
     else:
-        raise HTTPException(status_code=400, detail="part must be data/home/env")
+        raise HTTPException(status_code=400, detail="part must be data/home/env/all")
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"{target} not found")
     proc = subprocess.Popen(
