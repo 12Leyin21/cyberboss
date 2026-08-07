@@ -136,10 +136,10 @@ BARK_TIMEOUT = float(os.environ.get("BARK_TIMEOUT", "8"))
 # Do-not-disturb she switched on by voice ("我要出门了，开勿扰"). Survives restarts.
 BARK_DND_FILE = Path(os.environ.get("RELAY_BARK_DND_FILE",
                                     str(Path(__file__).parent / "bark_dnd")))
-# How many times a day the phone may actually ring. Her number, not mine: three.
-# Enforced here rather than left to the caller's good intentions — a rule that
-# only lives in a prompt is a rule the next model may not keep.
-BARK_CALL_QUOTA = int(os.environ.get("BARK_CALL_QUOTA", "3"))
+# How many times a day the phone may actually ring. 0 = no cap.
+# 2026-08-07 灵兮取消了每日上限（原来是 3）——响铃的分量交给他自己拿捏，
+# 不用代码来管。想恢复上限设 BARK_CALL_QUOTA 环境变量即可。
+BARK_CALL_QUOTA = int(os.environ.get("BARK_CALL_QUOTA", "0"))
 BARK_CALL_LOG = Path(os.environ.get("RELAY_BARK_CALL_LOG",
                                     str(Path(__file__).parent / "bark_calls.json")))
 # A public, unauthenticated avatar so the banner shows his face instead of Bark's
@@ -1596,7 +1596,7 @@ async def notify_call(request: Request):
         raise HTTPException(status_code=400, detail="reason is required")
     urgent = bool(body.get("urgent"))     # 升级拨号：穿透静音，慎用
     used = calls_used_today()
-    if used >= BARK_CALL_QUOTA:
+    if BARK_CALL_QUOTA > 0 and used >= BARK_CALL_QUOTA:
         # Out of rings — say it instead of ringing. Silence would read as a bug.
         await bark_push(AI_NAME, reason)
         return {"ok": True, "sent": False, "skipped": "quota",
@@ -1687,7 +1687,7 @@ async def notify_silence(request: Request):
         "calls_used": calls_used_today(),
         "calls_quota": BARK_CALL_QUOTA,
         "can_ring": bark_enabled() and not bark_dnd() and not in_quiet_hours()
-                    and calls_used_today() < BARK_CALL_QUOTA,
+                    and (BARK_CALL_QUOTA <= 0 or calls_used_today() < BARK_CALL_QUOTA),
     }
 
 
@@ -1973,8 +1973,9 @@ def evaluate_wake() -> dict:
         "health_age_hours": round(age_hours, 1) if age_hours is not None else None,
         "health_fresh": fresh,
         "can_ring": bark_enabled() and not bark_dnd() and not in_quiet_hours()
-                    and calls_used_today() < BARK_CALL_QUOTA,
-        "calls_left": max(0, BARK_CALL_QUOTA - calls_used_today()),
+                    and (BARK_CALL_QUOTA <= 0 or calls_used_today() < BARK_CALL_QUOTA),
+        "calls_left": (max(0, BARK_CALL_QUOTA - calls_used_today())
+                       if BARK_CALL_QUOTA > 0 else None),   # None = 不限次
     }
 
 
@@ -2984,8 +2985,10 @@ def _photo_row_out(row: dict) -> dict:
 
 @app.get("/photos/memories")
 async def list_photo_memories(request: Request, query: str = "",
-                              favorites_only: int = 0, limit: int = 200):
-    """相册整墙 / 按图注和标签搜。query 空 = 全部，新的在前。"""
+                              favorites_only: int = 0, captioned_only: int = 0,
+                              limit: int = 200):
+    """相册整墙 / 按图注和标签搜。query 空 = 全部，新的在前。
+    captioned_only=1 只出他写过图注的（2026-08-07 灵兮定：相册只收他标记过的）。"""
     check_auth(request)
     limit = max(1, min(int(limit), 500))
     sql = "SELECT * FROM photo_memories"
@@ -2996,6 +2999,8 @@ async def list_photo_memories(request: Request, query: str = "",
         args += [f"%{query}%", f"%{query}%"]
     if favorites_only:
         clauses.append("favorite = 1")
+    if captioned_only:
+        clauses.append("caption != ''")
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY id DESC LIMIT ?"

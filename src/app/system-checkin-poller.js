@@ -180,8 +180,10 @@ async function runSystemCheckinPoller(config) {
 function describeWake(verdict) {
   if (!verdict || !verdict.reasons?.length) return "";
   const ring = verdict.can_ring
-    ? `今天还能响铃 ${verdict.calls_left} 次`
-    : "现在不能响铃（勿扰／深夜／配额已满），但可以发消息";
+    ? (verdict.calls_left == null
+        ? "今天响铃不限次（2026-08-07 灵兮取消了上限，分量自己拿捏）"
+        : `今天还能响铃 ${verdict.calls_left} 次`)
+    : "现在不能响铃（勿扰／深夜），但可以发消息";
   // 她此刻在刷什么，一并递过去。以前这个数据躺在后端没人看——他得自己想起来
   // 去查，而没有任何东西提醒他"该查了"。现在不用他想起来。
   let doing = "";
