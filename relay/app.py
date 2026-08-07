@@ -1131,7 +1131,9 @@ async def handle_stream_delta(kind: str, body: dict) -> dict:
     msg = save_message("out", base_kind, text, dict(draft.get("meta") or {}))
     await broadcast(app_subs, {"type": "typing", "active": False})
     await broadcast(app_subs, app_payload(msg))
-    if base_kind == "reply" and not app_subs:
+    if base_kind == "reply":
+        # 2026-08-07 原生推送后永远推：app 前台时客户端自己不弹（willPresent 返回空），
+        # 锁屏刚锁那几十秒 SSE 还没断，按旧逻辑会漏推——微信式体验靠的就是这条
         await notify_all(msg)
     return {"id": msg["id"], "stream_id": stream_id, "saved": True}
 
@@ -1474,8 +1476,7 @@ async def deliver_ai_message(text: str) -> int:
     msg = save_message("out", "reply", text, {"user": "ai", "via": "official-app"})
     await broadcast(app_subs, {"type": "typing", "active": False})
     await broadcast(app_subs, app_payload(msg))
-    if not app_subs:
-        await notify_all(msg)  # a push failure must never affect persistence/fan-out
+    await notify_all(msg)  # 永远推；前台横幅由客户端按掉。push 失败不许影响落库
     return msg["id"]
 
 
@@ -1586,8 +1587,7 @@ async def channel_out(request: Request):
         voice_msg = save_message("out", "voice", f"🎤 {spoken}", voice_meta)
         await broadcast(app_subs, {"type": "typing", "active": False})
         await broadcast(app_subs, app_payload(voice_msg))
-        if not app_subs:
-            await notify_all(voice_msg)   # 语音条也算真回复，她不在线要推一下
+        await notify_all(voice_msg)   # 语音条也算真回复，永远推（前台由客户端静音）
         return {"id": voice_msg["id"], "attachment": upload}
 
     text = body.get("text", "")
@@ -1624,8 +1624,9 @@ async def channel_out(request: Request):
     await broadcast(app_subs, app_payload(msg))
     # Unread push: only when no PWA tab is holding the stream (app_subs empty);
     # only push real replies, not 'thinking' chatter.
-    if kind == "reply" and not app_subs:
-        await notify_all(msg)  # a push failure must never affect persistence/fan-out
+    if kind == "reply":
+        await notify_all(msg)  # 永远推；前台横幅由客户端按掉。push 失败不许影响落库
+
     return {"id": msg["id"]}
 
 
@@ -2256,8 +2257,7 @@ async def desk_say(request: Request):
     desk_seat["last_seen"] = now_iso()
     await broadcast(app_subs, {"type": "typing", "active": False})
     await broadcast(app_subs, app_payload(msg))
-    if not app_subs:
-        await notify_all(msg)  # a push failure must never affect persistence/fan-out
+    await notify_all(msg)  # 永远推；前台横幅由客户端按掉
     return {"id": msg["id"]}
 
 
