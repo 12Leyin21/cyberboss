@@ -1377,6 +1377,14 @@ def minimax_tts_mp3(text: str) -> bytes:
         raise HTTPException(status_code=502, detail="bad minimax audio payload")
 
 
+def _looks_pure_english(text: str) -> bool:
+    """整句没有一个汉字、且确实有英文字母 → 算纯英文句。
+    中英混说（大段中文里飘一句英文）按中文算——切声带只切在整句语言边界上。"""
+    has_cjk = any("一" <= ch <= "鿿" for ch in text)
+    has_latin = any(ch.isascii() and ch.isalpha() for ch in text)
+    return has_latin and not has_cjk
+
+
 def elevenlabs_tts_mp3(text: str) -> bytes:
     if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
         raise HTTPException(status_code=503, detail="elevenlabs tts not configured")
@@ -1384,11 +1392,18 @@ def elevenlabs_tts_mp3(text: str) -> bytes:
     if not clean:
         raise HTTPException(status_code=400, detail="empty text")
     clean = clean[:900]
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
+    # 双声带分工（2026-08-07 灵兮：一条中文绝、一条英文绝，都要）：
+    # 配了 ELEVENLABS_VOICE_ID_EN 时，纯英文句走英文声带，其余走主声带
+    voice_id = ELEVENLABS_VOICE_ID
+    voice_en = os.environ.get("ELEVENLABS_VOICE_ID_EN", "").strip()
+    if voice_en and _looks_pure_english(clean):
+        voice_id = voice_en
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     payload = {
         "text": clean,
         "model_id": ELEVENLABS_MODEL,
-        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+        # stability 抬高：每句都贴着她挑中的那个发挥走，少抽风（2026-08-07）
+        "voice_settings": {"stability": 0.62, "similarity_boost": 0.8},
     }
     req = urllib.request.Request(
         url,
