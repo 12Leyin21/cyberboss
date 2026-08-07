@@ -800,7 +800,22 @@ function createChannelAdapter(config) {
         await tidal.sendFile(filePath);
         return;
       }
-      const result = await weixin.sendFile({ userId, filePath, contextToken });
+      // 微信路失败（掉线/ret<0）时合并身位改投心潮——表情包不该因为
+      // 通道判断失手而消失（2026-08-07 沐沐 ret=-2 发不出表情包的事故）
+      let result;
+      try {
+        result = await weixin.sendFile({ userId, filePath, contextToken });
+      } catch (error) {
+        if (merged) {
+          await tidal.sendFile(filePath);
+          return;
+        }
+        throw error;
+      }
+      if (merged && result && typeof result.ret === "number" && result.ret < 0) {
+        await tidal.sendFile(filePath);
+        return result;
+      }
       if (merged && mirrorEnabled) {
         await tidal.sendFile(filePath).catch(() => {});
       }
