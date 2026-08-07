@@ -256,6 +256,20 @@ def init_db() -> None:
             )
             """
         )
+        # 原生推送（2026-08-07 开发者会员首日）：心潮自己的 APNs device token。
+        # env 记这个 token 活在哪个苹果环境——Xcode 装的包是 sandbox，
+        # 以后 TestFlight/正式包是 production，发的时候先试记住的再试另一个。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS push_tokens (
+                token    TEXT PRIMARY KEY,
+                platform TEXT NOT NULL DEFAULT 'ios',
+                env      TEXT NOT NULL DEFAULT 'sandbox',
+                created  TEXT NOT NULL,
+                last_ok  TEXT
+            )
+            """
+        )
         # 共读书房（2026-08-06，取经 EnhydrInk/tasogare）：两个人的笔迹落在
         # 同一页书上。书的正文在她手机里（本地永存），这里只存**笔迹和时长**——
         # 划线（quote 是锚，App 按它在章节里找位置渲染双色）、批注、每天读了多久。
@@ -768,6 +782,105 @@ async def bark_push(title: str, body: str, *, ring: bool = False,
     return {"sent": ok, "status": status, "quiet": quiet, "ring": ring, "critical": critical}
 
 
+# ---------------------------------------------------------------------------
+# APNs — 原生推送（2026-08-07，开发者会员批下来的第一天）
+# 心潮自己收通知，不再借 Bark 的门票。密钥放 Render Secret File（apns.p8），
+# 没配就静默跳过，Bark 继续站岗——退役要等接班人真上岗。
+# ---------------------------------------------------------------------------
+APNS_KEY_FILE = Path(os.environ.get("APNS_KEY_FILE", "/etc/secrets/apns.p8"))
+APNS_KEY_ID = os.environ.get("APNS_KEY_ID", "Y7HDL8LUT7")
+APNS_TEAM_ID = os.environ.get("APNS_TEAM_ID", "N65LM9RH9C")
+APNS_BUNDLE_ID = os.environ.get("APNS_BUNDLE_ID", "com.lingxi.hearttide")
+APNS_HOSTS = {"sandbox": "https://api.sandbox.push.apple.com",
+              "production": "https://api.push.apple.com"}
+
+_apns_jwt_cache = {"token": "", "ts": 0.0}
+
+
+def apns_enabled() -> bool:
+    return APNS_KEY_FILE.exists()
+
+
+def _apns_jwt() -> str:
+    """ES256 provider token，缓存 50 分钟（Apple 要求 20~60 分钟一换）。"""
+    now = time.time()
+    if _apns_jwt_cache["token"] and now - _apns_jwt_cache["ts"] < 50 * 60:
+        return _apns_jwt_cache["token"]
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+
+    key = serialization.load_pem_private_key(APNS_KEY_FILE.read_bytes(), password=None)
+
+    def b64url(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+    header = b64url(json.dumps({"alg": "ES256", "kid": APNS_KEY_ID}).encode())
+    claims = b64url(json.dumps({"iss": APNS_TEAM_ID, "iat": int(now)}).encode())
+    signing_input = f"{header}.{claims}".encode()
+    der_sig = key.sign(signing_input, ec.ECDSA(hashes.SHA256()))
+    r, s = decode_dss_signature(der_sig)
+    jwt = f"{header}.{claims}.{b64url(r.to_bytes(32, 'big') + s.to_bytes(32, 'big'))}"
+    _apns_jwt_cache.update(token=jwt, ts=now)
+    return jwt
+
+
+async def _apns_send_one(token: str, known_env: str, payload: dict,
+                         push_type: str = "alert") -> bool:
+    """发一个 token。先按记住的环境发，不认就换另一个；确定死了就下架。"""
+    import httpx as _httpx
+    order = [known_env] + [e for e in APNS_HOSTS if e != known_env]
+    headers = {
+        "authorization": f"bearer {_apns_jwt()}",
+        "apns-topic": APNS_BUNDLE_ID,
+        "apns-push-type": push_type,
+        "apns-priority": "10",
+    }
+    for env in order:
+        try:
+            async with _httpx.AsyncClient(http2=True, timeout=10) as client:
+                resp = await client.post(f"{APNS_HOSTS[env]}/3/device/{token}",
+                                         json=payload, headers=headers)
+        except Exception:
+            continue
+        if resp.status_code == 200:
+            with db() as conn:
+                conn.execute("UPDATE push_tokens SET env = ?, last_ok = ? WHERE token = ?",
+                             (env, now_iso(), token))
+            return True
+        reason = ""
+        try:
+            reason = resp.json().get("reason", "")
+        except Exception:
+            pass
+        if resp.status_code == 410 or reason == "Unregistered":
+            with db() as conn:
+                conn.execute("DELETE FROM push_tokens WHERE token = ?", (token,))
+            return False
+        if reason == "BadDeviceToken":
+            continue   # 环境不对，试另一个
+        return False   # 其他错误不重试，别把队列拖死
+    return False
+
+
+async def apns_broadcast(title: str, body: str) -> int:
+    """给所有注册过的设备发一条横幅。返回成功台数；0 = 该轮到 Bark 上了。"""
+    if not apns_enabled():
+        return 0
+    with db() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT token, env FROM push_tokens WHERE platform = 'ios'").fetchall()]
+    if not rows:
+        return 0
+    payload = {"aps": {"alert": {"title": title, "body": (body or "")[:900]},
+                       "sound": "default", "thread-id": "hearttide-chat"}}
+    sent = 0
+    for row in rows:
+        if await _apns_send_one(row["token"], row.get("env") or "sandbox", payload):
+            sent += 1
+    return sent
+
+
 async def notify_all(msg: dict) -> None:
     """Every path that used to only web-push now also rings the phone."""
     note = notification_from_message(msg)
@@ -775,10 +888,17 @@ async def notify_all(msg: dict) -> None:
         await push_to_all(note)
     except Exception:
         pass
+    # 原生推送优先；一台都没送达才让 Bark 兜底（过渡期，退役倒计时中）
+    sent_native = 0
     try:
-        await bark_push(note["title"], note["body"])
+        sent_native = await apns_broadcast(note["title"], note["body"])
     except Exception:
-        pass
+        sent_native = 0
+    if not sent_native:
+        try:
+            await bark_push(note["title"], note["body"])
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -1622,8 +1742,46 @@ async def notify_say(request: Request):
     text = (body.get("text") or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
-    result = await bark_push(body.get("title") or AI_NAME, text)
+    title = body.get("title") or AI_NAME
+    sent_native = 0
+    try:
+        sent_native = await apns_broadcast(title, text)
+    except Exception:
+        sent_native = 0
+    if sent_native:
+        return {"ok": True, "sent": True, "native": sent_native}
+    result = await bark_push(title, text)
     return {"ok": True, **result}
+
+
+@app.post("/push/register")
+async def push_register(request: Request):
+    """心潮启动时上报 APNs device token。重复注册没关系，upsert。"""
+    check_auth(request)
+    body = await request.json()
+    token = str(body.get("token") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{32,200}", token):
+        raise HTTPException(status_code=400, detail="bad device token")
+    env = body.get("env") if body.get("env") in APNS_HOSTS else "sandbox"
+    with db() as conn:
+        conn.execute(
+            """INSERT INTO push_tokens (token, platform, env, created)
+               VALUES (?, 'ios', ?, ?)
+               ON CONFLICT(token) DO UPDATE SET env = excluded.env""",
+            (token, env, now_iso()))
+    return {"ok": True, "apns_ready": apns_enabled()}
+
+
+@app.post("/push/test")
+async def push_test(request: Request):
+    """验收用：给所有注册设备发一条测试横幅。"""
+    check_auth(request)
+    body = await request.json()
+    text = (body.get("text") or "").strip() or "原生推送通了，Bark 可以退休了。"
+    sent = await apns_broadcast(body.get("title") or AI_NAME, text)
+    with db() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM push_tokens").fetchone()[0]
+    return {"ok": True, "sent": sent, "tokens": count, "apns_ready": apns_enabled()}
 
 
 @app.post("/notify/dnd")
