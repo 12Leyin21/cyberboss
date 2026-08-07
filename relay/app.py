@@ -974,9 +974,11 @@ CALL_TTS_SETTINGS = {"stability": 0.42, "similarity_boost": 0.85,
 
 def _call_tts(text: str) -> bytes:
     if ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
-        return elevenlabs_tts_mp3(
-            text, model=os.environ.get("ELEVENLABS_CALL_MODEL", "eleven_flash_v2_5"),
-            settings=dict(CALL_TTS_SETTINGS))
+        model = os.environ.get("ELEVENLABS_CALL_MODEL", "eleven_flash_v2_5")
+        # v3 走语音条同款默认参数——她最爱的就是那个声音；
+        # 那套"电话腔"参数是给 flash/multilingual 调的，别喂给 v3
+        settings = None if model.startswith("eleven_v3") else dict(CALL_TTS_SETTINGS)
+        return elevenlabs_tts_mp3(text, model=model, settings=settings)
     return minimax_tts_mp3(text)
 
 
@@ -3044,42 +3046,53 @@ async def app_voice(request: Request):
     upload = save_upload_bytes(data, request.query_params.get("name", "voice.webm"), mime, "voice")
     stored = Path(upload["url"]).name
     local_audio = UPLOAD_DIR / stored
-    transcript = transcribe_audio(local_audio, mime)
-    # 声学语气注（2026-08-07 phase 3a）：librosa 特征 vs 她的滚动基线。
-    # 正常一个字不说；wav（通话）能进来，m4a（聊天语音条）暂时解不开会静默跳过
-    tone_note = None
-    if transcript:
-        try:
-            from tone import analyze_tone
-            tone_note = await asyncio.to_thread(
-                analyze_tone, local_audio, len(transcript),
-                Path(DB_PATH).parent / "tone_baseline.json")
-        except Exception as exc:
-            print(f"[tone] skipped: {exc}")
-    text = ("🎤 " + transcript) if transcript else f"🎤 [语音] {HUMAN_NAME}发来一段语音；当前 relay 未配置 ASR，音频已作为附件送达。"
-    if tone_note:
-        text += f"\n〔她的声音：{tone_note}〕"
-    meta = {
-        "user": "human",
-        "voice": True,
-        "source": "media_recorder",
-        "attachments": [upload],
-        "transcribed": bool(transcript),
-    }
-    # 通话中的话不进聊天流（2026-08-07 灵兮定：像真电话，只留通话时长卡）。
-    # 打上 call 标记，App 聊天页跳过它们；他那边照常收到
-    if call_active():
-        meta["call"] = True
-        # 打断信号：她开口了——还在后台逐句合成的旧回复流水线就此停手
+    in_call = call_active()
+    if in_call:
+        # 打断信号第一时间发（不等转写）：她开口了——后台逐句合成的旧回复停手
         CALL_STATE["gen"] = CALL_STATE.get("gen", 0) + 1
-    msg = save_message("in", "voice", text, meta)
-    await broadcast(plugin_subs, plugin_payload(msg))
-    await broadcast(app_subs, app_payload(msg))
-    await broadcast(app_subs, {"type": "typing", "active": True})
-    # 快脑搭腔（v2）：2-3 秒内先应一声，沐沐的正事在路上。异步跑，不拖这个请求
-    if call_active() and transcript and fast_brain_enabled():
-        asyncio.create_task(quick_ack(msg["id"], transcript))
-    return {"id": msg["id"], "text": transcript, "attachment": upload}
+
+    async def _process() -> dict:
+        transcript = await asyncio.to_thread(transcribe_audio, local_audio, mime)
+        # 声学语气注（2026-08-07 phase 3a）：librosa 特征 vs 她的滚动基线。
+        # 正常一个字不说；wav（通话）能进来，m4a（聊天语音条）暂时解不开会静默跳过
+        tone_note = None
+        if transcript:
+            try:
+                from tone import analyze_tone
+                tone_note = await asyncio.to_thread(
+                    analyze_tone, local_audio, len(transcript),
+                    Path(DB_PATH).parent / "tone_baseline.json")
+            except Exception as exc:
+                print(f"[tone] skipped: {exc}")
+        text = ("🎤 " + transcript) if transcript else f"🎤 [语音] {HUMAN_NAME}发来一段语音；当前 relay 未配置 ASR，音频已作为附件送达。"
+        if tone_note:
+            text += f"\n〔她的声音：{tone_note}〕"
+        meta = {
+            "user": "human",
+            "voice": True,
+            "source": "media_recorder",
+            "attachments": [upload],
+            "transcribed": bool(transcript),
+        }
+        # 通话中的话不进聊天流（2026-08-07 灵兮定：像真电话，只留通话时长卡）。
+        # 打上 call 标记，App 聊天页跳过它们；他那边照常收到
+        if in_call:
+            meta["call"] = True
+        msg = save_message("in", "voice", text, meta)
+        await broadcast(plugin_subs, plugin_payload(msg))
+        await broadcast(app_subs, app_payload(msg))
+        await broadcast(app_subs, {"type": "typing", "active": True})
+        # 快脑搭腔（v2）：2-3 秒内先应一声，沐沐的正事在路上。异步跑，不拖这个请求
+        if in_call and transcript and fast_brain_enabled():
+            asyncio.create_task(quick_ack(msg["id"], transcript))
+        return {"id": msg["id"], "text": transcript, "attachment": upload}
+
+    if in_call:
+        # 通话要的是快：音频落盘就放行（app 不看响应体），转写在后台跑——
+        # 13 秒长句曾把上传端等到 60s 超时（2026-08-07 黑匣子实测）
+        asyncio.create_task(_process())
+        return {"queued": True, "attachment": upload}
+    return await _process()
 
 
 @app.post("/app/call")
