@@ -1532,12 +1532,14 @@ def elevenlabs_tts_mp3(text: str, model: str = "", settings: dict | None = None,
         # stability 抬高：每句都贴着她挑中的那个发挥走，少抽风（2026-08-07）
         "voice_settings": settings or {"stability": 0.62, "similarity_boost": 0.8},
     }
-    # 前后文提示（2026-08-07 晚）：通话把整段切成短句逐句合成，v3 拿到光秃秃的
-    # 短句会念成播音腔——把前后句喂给它，语调就连回一段自然说话
-    if previous_text:
-        payload["previous_text"] = previous_text[-500:]
-    if next_text:
-        payload["next_text"] = next_text[:500]
+    # 前后文提示（2026-08-07 晚）：通话把整段切成短句逐句合成，光秃秃的短句
+    # 会念成播音腔——把前后句喂给它，语调就连回一段自然说话。
+    # ⚠️ v3 官方还不支持这两个参数（带上直接 400），只给 flash/multilingual 用
+    if not (model or ELEVENLABS_MODEL).startswith("eleven_v3"):
+        if previous_text:
+            payload["previous_text"] = previous_text[-500:]
+        if next_text:
+            payload["next_text"] = next_text[:500]
     req = urllib.request.Request(
         url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
