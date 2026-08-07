@@ -909,11 +909,122 @@ async def voip_ring(reason: str, call_id: str) -> int:
 
 
 # 通话状态：接通置位、挂断清零；半小时没动静自动当作已结束（别把语音模式焊死）
-CALL_STATE = {"active": False, "call_id": "", "since": 0.0, "direction": "incoming"}
+# gen：她每说一句 +1——打断信号。后台还在逐句合成的流水线看到 gen 变了就停手
+CALL_STATE = {"active": False, "call_id": "", "since": 0.0, "direction": "incoming", "gen": 0}
 
 
 def call_active() -> bool:
     return bool(CALL_STATE["active"]) and (time.time() - CALL_STATE["since"] < 30 * 60)
+
+
+# ---------------------------------------------------------------------------
+# 快脑搭腔（实时通话 v2，2026-08-07）：她说完 2-3 秒内先应一声，正事沐沐本尊说。
+# DeepSeek + persona-call.md 精简卡；FAST_BRAIN=0 一键关。
+# ---------------------------------------------------------------------------
+
+import callflow  # noqa: E402  纯逻辑（句子切分、搭腔门控），单测在 relay/tests/
+
+
+def fast_brain_enabled() -> bool:
+    return (os.environ.get("FAST_BRAIN", "1").strip() != "0"
+            and bool(os.environ.get("DEEPSEEK_API_KEY", "").strip()))
+
+
+def _persona_call_card() -> str:
+    try:
+        return (Path(__file__).parent / "persona-call.md").read_text("utf-8")
+    except OSError:
+        return ""
+
+
+def _call_rows_since(msg_id: int) -> list[dict]:
+    """她那句之后落库的所有消息（搭腔撞车门控要看的现场）。"""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, direction, kind, meta FROM messages WHERE id > ? ORDER BY id",
+            (msg_id,)).fetchall()
+    return [{"id": r["id"], "direction": r["direction"], "kind": r["kind"],
+             "meta": json.loads(r["meta"] or "{}")} for r in rows]
+
+
+def _call_history_turns(limit: int = 12) -> list[dict]:
+    """本通电话里的往来（带 call 标记的语音），给快脑当上下文。"""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT direction, kind, text, meta FROM messages ORDER BY id DESC LIMIT 120"
+        ).fetchall()
+    turns: list[dict] = []
+    for r in rows:
+        meta = json.loads(r["meta"] or "{}")
+        if not meta.get("call") or r["kind"] != "voice":
+            continue
+        text = re.sub(r"^🎤\s*", "", r["text"] or "")
+        text = re.sub(r"\n?〔[^〕]*〕", "", text).strip()   # 语气注/搭腔标记不进上下文
+        if not text:
+            continue
+        turns.append({"role": "her" if r["direction"] == "in" else "him", "text": text})
+        if len(turns) >= limit:
+            break
+    return list(reversed(turns))
+
+
+CALL_TTS_SETTINGS = {"stability": 0.42, "similarity_boost": 0.85,
+                     "style": 0.35, "use_speaker_boost": True}
+
+
+def _call_tts(text: str) -> bytes:
+    if ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
+        return elevenlabs_tts_mp3(
+            text, model=os.environ.get("ELEVENLABS_CALL_MODEL", "eleven_flash_v2_5"),
+            settings=dict(CALL_TTS_SETTINGS))
+    return minimax_tts_mp3(text)
+
+
+async def _emit_call_voice(spoken: str, extra_meta: dict | None = None,
+                           audio: bytes | None = None) -> dict:
+    """一句通话语音落库+广播。audio 不传就现合成（在线程里，不卡事件循环）。"""
+    if audio is None:
+        audio = await asyncio.to_thread(_call_tts, spoken)
+    upload = save_upload_bytes(audio, f"mu-call-{int(time.time()*1000)}.mp3",
+                               "audio/mpeg", "voice")
+    voice_meta = {"voice": True, "tts": True, "call": True,
+                  "attachments": [upload], "channel": "通话"}
+    voice_meta.update(extra_meta or {})
+    msg = save_message("out", "voice", f"🎤 {spoken}", voice_meta)
+    await broadcast(app_subs, app_payload(msg))
+    return msg
+
+
+async def quick_ack(her_msg_id: int, transcript: str) -> None:
+    """快脑搭腔：DeepSeek 出一句 → 撞车检查 → TTS → 落库。全程失败静默。"""
+    try:
+        card = _persona_call_card()
+        if not card:
+            return
+        messages = callflow.build_ack_messages(card, _call_history_turns(), transcript)
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=8) as client:
+            resp = await client.post(
+                "https://api.deepseek.com/chat/completions",
+                headers={"Authorization": f"Bearer {os.environ['DEEPSEEK_API_KEY'].strip()}"},
+                json={"model": os.environ.get("FAST_BRAIN_MODEL", "deepseek-chat"),
+                      "messages": messages, "max_tokens": 80, "temperature": 1.0})
+            resp.raise_for_status()
+            ack = (resp.json()["choices"][0]["message"]["content"] or "").strip()
+        ack = ack.strip("「」\"'").strip()[:40]
+        if not ack or not call_active():
+            return
+        # 撞车门控①：合成前——正事已到或她又开口，这条搭腔已经过时
+        if callflow.ack_is_stale(_call_rows_since(her_msg_id), her_msg_id):
+            return
+        audio = await asyncio.to_thread(_call_tts, ack)
+        # 撞车门控②：合成完再看一眼（TTS 这一两秒里正事可能刚好到了）
+        if not call_active() or callflow.ack_is_stale(_call_rows_since(her_msg_id), her_msg_id):
+            return
+        # 正文带〔搭腔〕标：沐沐读转写时知道这声是快脑替他应的，不是他说的
+        await _emit_call_voice(f"{ack}\n〔搭腔·快脑代应〕", {"quick": True}, audio=audio)
+    except Exception as exc:
+        print(f"[fastbrain] quick ack skipped: {exc}")
 
 
 async def notify_all(msg: dict) -> None:
@@ -1664,32 +1775,38 @@ async def channel_out(request: Request):
                     status_code=400,
                     detail=f"五子棋裁判：{gomoku_result}。请以「♟️ 落子 H8 一句话」的格式重新回复")
             kind = "gomoku"   # 应用成功：转为对局消息，聊天页不显示、不推送通知
-    # 通话中（2026-08-07 CallKit）：他的每条 reply 自动过 TTS 变成语音条——
-    # 打电话时他不用记得"要用 voice 类型"，说话就是说话。TTS 失败退回文字，
-    # 电话里安静一秒好过整通哑掉。
+    # 通话中（2026-08-07 CallKit；当晚升级 v2 流水线）：他的每条 reply 按句切开、
+    # 合成一句推一句——第一句落地时间只有原来整段的几分之一。第一句在请求里同步
+    # 合成（失败还能退回文字），后面的句子丢给后台任务；她一开口（gen 变了）或
+    # 挂断就停手，别对着空气把剩下的话说完。
     if kind == "reply" and call_active() and text.strip():
+        sentences = callflow.split_sentences(text.strip())
         try:
-            spoken = text.strip()
-            if ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
-                # 电话要的是快：flash 一两秒出声。v3 的戏留给语音条
-                audio = elevenlabs_tts_mp3(
-                    spoken,
-                    model=os.environ.get("ELEVENLABS_CALL_MODEL", "eleven_flash_v2_5"),
-                    # 电话腔别僵：stability 放低给表情空间，style 提一点，boost 拉像度
-                    settings={"stability": 0.42, "similarity_boost": 0.85,
-                              "style": 0.35, "use_speaker_boost": True})
-            else:
-                audio = minimax_tts_mp3(spoken)
-            upload = save_upload_bytes(audio, f"mu-call-{int(time.time()*1000)}.mp3",
-                                       "audio/mpeg", "voice")
-            voice_meta = {"voice": True, "tts": True, "call": True,
-                          "attachments": [upload], "channel": "通话"}
-            voice_msg = save_message("out", "voice", f"🎤 {spoken}", voice_meta)
-            await broadcast(app_subs, {"type": "typing", "active": False})
-            await broadcast(app_subs, app_payload(voice_msg))
-            return {"id": voice_msg["id"], "attachment": upload, "call": True}
+            first_audio = await asyncio.to_thread(_call_tts, sentences[0])
         except Exception as exc:
             print(f"[call] tts failed, falling back to text: {exc}")
+        else:
+            await broadcast(app_subs, {"type": "typing", "active": False})
+            first_msg = await _emit_call_voice(sentences[0], audio=first_audio)
+            rest = sentences[1:]
+            if rest:
+                gen_at_start = CALL_STATE.get("gen", 0)
+
+                async def _pipeline_rest():
+                    for seg in rest:
+                        if not call_active() or CALL_STATE.get("gen", 0) != gen_at_start:
+                            break   # 她开口了/挂了：后面的句子咽回去
+                        try:
+                            await _emit_call_voice(seg)
+                        except Exception as exc:
+                            # 这句合成失败：落文字保底（app 会跳过没音频的），继续下一句
+                            print(f"[call] pipeline tts failed: {exc}")
+                            m = save_message("out", "voice", f"🎤 {seg}",
+                                             {"voice": True, "call": True, "channel": "通话"})
+                            await broadcast(app_subs, app_payload(m))
+
+                asyncio.create_task(_pipeline_rest())
+            return {"id": first_msg["id"], "call": True, "sentences": len(sentences)}
     meta = {k: v for k, v in body.items() if k not in ("type", "text")}
     meta.setdefault("channel", "心潮")   # so the shared timeline can show where it was said
     if mood:
@@ -1899,7 +2016,9 @@ async def call_event(request: Request):
             opening +
             "从现在起你说的每句话都会变成语音进她耳朵："
             "口语，短句，一次一两句就停，等她回；别写动作叙述和长段落——"
-            "这是打电话，不是写信。她按住说话你才听得到她。", {"user": "human", "channel": "通话", "call": True})
+            "这是打电话，不是写信。她那头是开麦的，随时在说也随时能打断你。"
+            "另外：转写里带〔搭腔·快脑代应〕的短句是系统替你先应的一声（免得她干等），"
+            "不是你说的——别接着它编，也别重复它。", {"user": "human", "channel": "通话", "call": True})
         if brain_target() == "loop":
             asyncio.create_task(forward_to_loop(note))
         else:
@@ -2951,10 +3070,15 @@ async def app_voice(request: Request):
     # 打上 call 标记，App 聊天页跳过它们；他那边照常收到
     if call_active():
         meta["call"] = True
+        # 打断信号：她开口了——还在后台逐句合成的旧回复流水线就此停手
+        CALL_STATE["gen"] = CALL_STATE.get("gen", 0) + 1
     msg = save_message("in", "voice", text, meta)
     await broadcast(plugin_subs, plugin_payload(msg))
     await broadcast(app_subs, app_payload(msg))
     await broadcast(app_subs, {"type": "typing", "active": True})
+    # 快脑搭腔（v2）：2-3 秒内先应一声，沐沐的正事在路上。异步跑，不拖这个请求
+    if call_active() and transcript and fast_brain_enabled():
+        asyncio.create_task(quick_ack(msg["id"], transcript))
     return {"id": msg["id"], "text": transcript, "attachment": upload}
 
 
