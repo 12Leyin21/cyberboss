@@ -826,13 +826,13 @@ def _apns_jwt() -> str:
 
 
 async def _apns_send_one(token: str, known_env: str, payload: dict,
-                         push_type: str = "alert") -> bool:
+                         push_type: str = "alert", topic: str = "") -> bool:
     """发一个 token。先按记住的环境发，不认就换另一个；确定死了就下架。"""
     import httpx as _httpx
     order = [known_env] + [e for e in APNS_HOSTS if e != known_env]
     headers = {
         "authorization": f"bearer {_apns_jwt()}",
-        "apns-topic": APNS_BUNDLE_ID,
+        "apns-topic": topic or APNS_BUNDLE_ID,
         "apns-push-type": push_type,
         "apns-priority": "10",
     }
@@ -879,6 +879,38 @@ async def apns_broadcast(title: str, body: str) -> int:
         if await _apns_send_one(row["token"], row.get("env") or "sandbox", payload):
             sent += 1
     return sent
+
+
+# ---------------------------------------------------------------------------
+# 真来电（2026-08-07 下午，开发者会员当日）：VoIP 推送 → CallKit 全屏来电。
+# fig 的 callhome 用连环横幅模拟铃声；我们有付费资质，直接走正门。
+# ---------------------------------------------------------------------------
+
+async def voip_ring(reason: str, call_id: str) -> int:
+    """给所有 VoIP token 发来电推送。App 的 PushKit 收到后立刻拉起 CallKit。"""
+    if not apns_enabled():
+        return 0
+    with db() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT token, env FROM push_tokens WHERE platform = 'ios-voip'").fetchall()]
+    if not rows:
+        return 0
+    payload = {"type": "incoming_call", "call_id": call_id,
+               "reason": (reason or "")[:200], "caller": AI_NAME}
+    sent = 0
+    for row in rows:
+        if await _apns_send_one(row["token"], row.get("env") or "sandbox", payload,
+                                push_type="voip", topic=f"{APNS_BUNDLE_ID}.voip"):
+            sent += 1
+    return sent
+
+
+# 通话状态：接通置位、挂断清零；半小时没动静自动当作已结束（别把语音模式焊死）
+CALL_STATE = {"active": False, "call_id": "", "since": 0.0}
+
+
+def call_active() -> bool:
+    return bool(CALL_STATE["active"]) and (time.time() - CALL_STATE["since"] < 30 * 60)
 
 
 async def notify_all(msg: dict) -> None:
@@ -1614,6 +1646,26 @@ async def channel_out(request: Request):
                     status_code=400,
                     detail=f"五子棋裁判：{gomoku_result}。请以「♟️ 落子 H8 一句话」的格式重新回复")
             kind = "gomoku"   # 应用成功：转为对局消息，聊天页不显示、不推送通知
+    # 通话中（2026-08-07 CallKit）：他的每条 reply 自动过 TTS 变成语音条——
+    # 打电话时他不用记得"要用 voice 类型"，说话就是说话。TTS 失败退回文字，
+    # 电话里安静一秒好过整通哑掉。
+    if kind == "reply" and call_active() and text.strip():
+        try:
+            spoken = text.strip()
+            if ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
+                audio = elevenlabs_tts_mp3(spoken)
+            else:
+                audio = minimax_tts_mp3(spoken)
+            upload = save_upload_bytes(audio, f"mu-call-{int(time.time()*1000)}.mp3",
+                                       "audio/mpeg", "voice")
+            voice_meta = {"voice": True, "tts": True, "call": True,
+                          "attachments": [upload], "channel": "通话"}
+            voice_msg = save_message("out", "voice", f"🎤 {spoken}", voice_meta)
+            await broadcast(app_subs, {"type": "typing", "active": False})
+            await broadcast(app_subs, app_payload(voice_msg))
+            return {"id": voice_msg["id"], "attachment": upload, "call": True}
+        except Exception as exc:
+            print(f"[call] tts failed, falling back to text: {exc}")
     meta = {k: v for k, v in body.items() if k not in ("type", "text")}
     meta.setdefault("channel", "心潮")   # so the shared timeline can show where it was said
     if mood:
@@ -1756,6 +1808,15 @@ async def notify_call(request: Request):
         await bark_push(AI_NAME, reason)
         return {"ok": True, "sent": False, "skipped": "quota",
                 "used": used, "quota": BARK_CALL_QUOTA, "fell_back_to_notice": True}
+    # 真来电优先（2026-08-07）：有 VoIP token 且不在深夜/勿扰 → CallKit 全屏来电。
+    # 深夜和勿扰的规矩跟 Bark 响铃一个标准——正门也不能半夜翻。
+    if not in_quiet_hours() and not bark_dnd():
+        call_id = secrets.token_hex(8)
+        voip_sent = await voip_ring(reason, call_id)
+        if voip_sent:
+            used = record_call()
+            return {"ok": True, "sent": True, "ring": True, "voip": voip_sent,
+                    "call_id": call_id, "used": used, "quota": BARK_CALL_QUOTA}
     result = await bark_push(
         f"{AI_NAME}来电",
         reason,
@@ -1789,6 +1850,61 @@ async def notify_say(request: Request):
     return {"ok": True, **result}
 
 
+@app.post("/call/event")
+async def call_event(request: Request):
+    """通话生命周期回报（App 的 CallKit 打过来）：answered / declined / ended。
+
+    接通 → 置 call_active，给他注入一条通话须知（短句、口语、别写叙事）；
+    挂断 → 清状态 + 落一条 kind=call 进通话历史 + 告诉他通话时长；
+    未接/拒接 → 告诉他（他的礼仪是补一条"没接到你"留言，不追问）。
+    """
+    check_auth(request)
+    body = await request.json()
+    event = str(body.get("event") or "").strip()
+    call_id = str(body.get("call_id") or "").strip()
+    if event == "answered":
+        CALL_STATE.update(active=True, call_id=call_id, since=time.time())
+        note = save_message("in", "user",
+            "📞 接通了，她在听。从现在起你说的每句话都会变成语音进她耳朵："
+            "口语，短句，一次一两句就停，等她回；别写动作叙述和长段落——"
+            "这是打电话，不是写信。她按住说话你才听得到她。", {"user": "human", "channel": "通话", "call": True})
+        if brain_target() == "loop":
+            asyncio.create_task(forward_to_loop(note))
+        else:
+            await broadcast(plugin_subs, plugin_payload(note))
+        await broadcast(app_subs, {"type": "typing", "active": True})
+        return {"ok": True, "call_active": True}
+    if event in ("declined", "missed"):
+        CALL_STATE.update(active=False, call_id="", since=0.0)
+        label = "她按掉了电话" if event == "declined" else "响完了她没接到"
+        note = save_message("in", "user",
+            f"📞 {label}。按你的规矩来：补一条不带压力的留言就好，别连环追问。",
+            {"user": "human", "channel": "通话", "call": True})
+        if brain_target() == "loop":
+            asyncio.create_task(forward_to_loop(note))
+        else:
+            await broadcast(plugin_subs, plugin_payload(note))
+        return {"ok": True, "call_active": False}
+    if event == "ended":
+        CALL_STATE.update(active=False, call_id="", since=0.0)
+        seconds = int(body.get("duration_seconds") or 0)
+        minutes, secs = divmod(max(0, seconds), 60)
+        pretty = f"{minutes} 分 {secs} 秒" if minutes else f"{secs} 秒"
+        # 通话历史卡片（App 的通话历史房间按 kind=call 渲染）
+        call_msg = save_message("out", "call", f"📞 通话 {pretty}",
+                                {"duration_seconds": seconds, "direction": "incoming"})
+        await broadcast(app_subs, app_payload(call_msg))
+        note = save_message("in", "user",
+            f"📞 挂断了，这通电话打了 {pretty}。回到打字聊天，不用再用通话腔。",
+            {"user": "human", "channel": "通话", "call": True})
+        if brain_target() == "loop":
+            asyncio.create_task(forward_to_loop(note))
+        else:
+            await broadcast(plugin_subs, plugin_payload(note))
+        return {"ok": True, "call_active": False, "duration": pretty}
+    raise HTTPException(status_code=400, detail="event must be answered/declined/missed/ended")
+
+
 @app.post("/push/register")
 async def push_register(request: Request):
     """心潮启动时上报 APNs device token。重复注册没关系，upsert。"""
@@ -1798,12 +1914,14 @@ async def push_register(request: Request):
     if not re.fullmatch(r"[0-9a-f]{32,200}", token):
         raise HTTPException(status_code=400, detail="bad device token")
     env = body.get("env") if body.get("env") in APNS_HOSTS else "sandbox"
+    # "ios" = 普通横幅推送；"ios-voip" = PushKit 来电通道（token 是另一串）
+    platform = body.get("platform") if body.get("platform") in ("ios", "ios-voip") else "ios"
     with db() as conn:
         conn.execute(
             """INSERT INTO push_tokens (token, platform, env, created)
-               VALUES (?, 'ios', ?, ?)
-               ON CONFLICT(token) DO UPDATE SET env = excluded.env""",
-            (token, env, now_iso()))
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(token) DO UPDATE SET env = excluded.env, platform = excluded.platform""",
+            (token, platform, env, now_iso()))
     return {"ok": True, "apns_ready": apns_enabled()}
 
 
