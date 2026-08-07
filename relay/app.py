@@ -3104,6 +3104,19 @@ async def app_voice(request: Request):
                     Path(DB_PATH).parent / "tone_baseline.json")
             except Exception as exc:
                 print(f"[tone] skipped: {exc}")
+        # SenseVoice 情绪耳朵（2026-08-07 搬家当晚上线）：本机 8100 常驻小服务，
+        # 听出笑声/哭腔/情绪色。没起、超时、崩了都静默跳过，主链路不等它死
+        if transcript:
+            try:
+                import httpx as _httpx
+                async with _httpx.AsyncClient(timeout=8) as client:
+                    resp = await client.post("http://127.0.0.1:8100/analyze",
+                                             json={"path": str(local_audio)})
+                    emotion_notes = resp.json().get("notes") or []
+                if emotion_notes:
+                    tone_note = "，".join(([tone_note] if tone_note else []) + emotion_notes)
+            except Exception as exc:
+                print(f"[emotion] skipped: {exc}")
         text = ("🎤 " + transcript) if transcript else f"🎤 [语音] {HUMAN_NAME}发来一段语音；当前 relay 未配置 ASR，音频已作为附件送达。"
         if tone_note:
             text += f"\n〔她的声音：{tone_note}〕"
