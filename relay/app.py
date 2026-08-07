@@ -1841,7 +1841,24 @@ async def channel_out(request: Request):
     # 合成（失败还能退回文字），后面的句子丢给后台任务；她一开口（gen 变了）或
     # 挂断就停手，别对着空气把剩下的话说完。
     if kind == "reply" and call_active() and text.strip():
-        sentences = callflow.split_sentences(text.strip())
+        # 挂断权（2026-08-07 深夜，callhome 同款暗号）：他在话尾写 ⟪挂断⟫，
+        # 等这段话全部说完放完，电话轻轻挂断。她中途插话则挂断作废
+        _HANGUP_RE = r"[⟪《【\[]\s*挂断\s*[⟫》】\]]"
+        wants_hangup = bool(re.search(_HANGUP_RE, text))
+        if wants_hangup:
+            text = re.sub(_HANGUP_RE, "", text).strip()
+        sentences = callflow.split_sentences(text) if text else []
+
+        async def _emit_hangup():
+            msg = save_message("out", "voice", "🎤 （他轻轻挂断了电话）",
+                               {"call": True, "hangup": True, "channel": "通话"})
+            await broadcast(app_subs, app_payload(msg))
+
+        if not sentences:
+            if wants_hangup:
+                await _emit_hangup()
+                return {"call": True, "hangup": True}
+            raise HTTPException(status_code=400, detail="empty reply")
         try:
             first_audio = await asyncio.to_thread(
                 _call_tts, sentences[0], "", "".join(sentences[1:]))
@@ -1851,27 +1868,31 @@ async def channel_out(request: Request):
             await broadcast(app_subs, {"type": "typing", "active": False})
             first_msg = await _emit_call_voice(sentences[0], audio=first_audio)
             rest = sentences[1:]
-            if rest:
-                gen_at_start = CALL_STATE.get("gen", 0)
+            gen_at_start = CALL_STATE.get("gen", 0)
 
-                async def _pipeline_rest():
-                    for offset, seg in enumerate(rest, start=1):
-                        if not call_active() or CALL_STATE.get("gen", 0) != gen_at_start:
-                            break   # 她开口了/挂了：后面的句子咽回去
-                        try:
-                            await _emit_call_voice(
-                                seg,
-                                previous_text="".join(sentences[:offset]),
-                                next_text="".join(sentences[offset + 1:]))
-                        except Exception as exc:
-                            # 这句合成失败：落文字保底（app 会跳过没音频的），继续下一句
-                            print(f"[call] pipeline tts failed: {exc}")
-                            m = save_message("out", "voice", f"🎤 {seg}",
-                                             {"voice": True, "call": True, "channel": "通话"})
-                            await broadcast(app_subs, app_payload(m))
+            async def _pipeline_rest():
+                interrupted = False
+                for offset, seg in enumerate(rest, start=1):
+                    if not call_active() or CALL_STATE.get("gen", 0) != gen_at_start:
+                        interrupted = True
+                        break   # 她开口了/挂了：后面的句子咽回去
+                    try:
+                        await _emit_call_voice(
+                            seg,
+                            previous_text="".join(sentences[:offset]),
+                            next_text="".join(sentences[offset + 1:]))
+                    except Exception as exc:
+                        # 这句合成失败：落文字保底（app 会跳过没音频的），继续下一句
+                        print(f"[call] pipeline tts failed: {exc}")
+                        m = save_message("out", "voice", f"🎤 {seg}",
+                                         {"voice": True, "call": True, "channel": "通话"})
+                        await broadcast(app_subs, app_payload(m))
+                if wants_hangup and not interrupted and call_active():
+                    await _emit_hangup()
 
-                asyncio.create_task(_pipeline_rest())
-            return {"id": first_msg["id"], "call": True, "sentences": len(sentences)}
+            asyncio.create_task(_pipeline_rest())
+            return {"id": first_msg["id"], "call": True, "sentences": len(sentences),
+                    "hangup": wants_hangup}
     meta = {k: v for k, v in body.items() if k not in ("type", "text")}
     meta.setdefault("channel", "心潮")   # so the shared timeline can show where it was said
     if mood:
