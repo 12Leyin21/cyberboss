@@ -1388,7 +1388,7 @@ def _looks_pure_english(text: str) -> bool:
     return has_latin and not has_cjk
 
 
-def elevenlabs_tts_mp3(text: str) -> bytes:
+def elevenlabs_tts_mp3(text: str, model: str = "") -> bytes:
     if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
         raise HTTPException(status_code=503, detail="elevenlabs tts not configured")
     clean = (text or "").strip()
@@ -1404,7 +1404,7 @@ def elevenlabs_tts_mp3(text: str) -> bytes:
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     payload = {
         "text": clean,
-        "model_id": ELEVENLABS_MODEL,
+        "model_id": model or ELEVENLABS_MODEL,
         # stability 抬高：每句都贴着她挑中的那个发挥走，少抽风（2026-08-07）
         "voice_settings": {"stability": 0.62, "similarity_boost": 0.8},
     }
@@ -1671,7 +1671,9 @@ async def channel_out(request: Request):
         try:
             spoken = text.strip()
             if ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID:
-                audio = elevenlabs_tts_mp3(spoken)
+                # 电话要的是快：flash 一两秒出声。v3 的戏留给语音条
+                audio = elevenlabs_tts_mp3(
+                    spoken, model=os.environ.get("ELEVENLABS_CALL_MODEL", "eleven_flash_v2_5"))
             else:
                 audio = minimax_tts_mp3(spoken)
             upload = save_upload_bytes(audio, f"mu-call-{int(time.time()*1000)}.mp3",
