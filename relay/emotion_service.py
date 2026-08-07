@@ -55,16 +55,17 @@ def analyze(body: AnalyzeIn):
     result = model.generate(input=body.path, language="auto", use_itn=False)
     raw = (result[0].get("text") or "") if result else ""
     tags = re.findall(r"<\|([A-Za-z_]+)\|>", raw)
-    notes = []
-    for tag in tags:
-        if tag in EMOTION_ZH:
-            notes.append(EMOTION_ZH[tag])
-        elif tag in EVENT_ZH:
-            notes.append(EVENT_ZH[tag])
-    # 去重保序
-    seen, uniq = set(), []
-    for note in notes:
-        if note not in seen:
-            seen.add(note)
-            uniq.append(note)
-    return {"tags": tags, "notes": uniq}
+
+    def uniq(seq):
+        seen, out = set(), []
+        for item in seq:
+            if item not in seen:
+                seen.add(item)
+                out.append(item)
+        return out
+
+    # 分两筐：声音事件（笑声/哭腔，可靠）和情绪色（模型猜的，要跟基线层互证）
+    events = uniq(EVENT_ZH[t] for t in tags if t in EVENT_ZH)
+    emotions = uniq(EMOTION_ZH[t] for t in tags if t in EMOTION_ZH)
+    return {"tags": tags, "events": events, "emotions": emotions,
+            "notes": events + emotions}   # notes 留着向后兼容

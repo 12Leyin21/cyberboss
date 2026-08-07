@@ -3116,30 +3116,42 @@ async def app_voice(request: Request):
 
     async def _process() -> dict:
         transcript = await asyncio.to_thread(transcribe_audio, local_audio, mime)
-        # 声学语气注（2026-08-07 phase 3a）：librosa 特征 vs 她的滚动基线。
-        # 正常一个字不说；wav（通话）能进来，m4a（聊天语音条）暂时解不开会静默跳过
+        # 双层情绪感知（fig 同款架构，2026-08-07 晚定型）：
+        # ①librosa vs 她的滚动基线——只说相对（"比平时轻"），不设死阈值；
+        # ②SenseVoice 情绪标签——但情绪色必须被基线层的偏离佐证才算数
+        #   （模型说"难过"而她声音跟平时没差 → 多半误报，不给沐沐看）；
+        #   笑声/哭腔这类声音事件可靠，直接放行。两层并行跑，省 2-3 秒
         tone_note = None
         if transcript:
-            try:
-                from tone import analyze_tone
-                tone_note = await asyncio.to_thread(
-                    analyze_tone, local_audio, len(transcript),
-                    Path(DB_PATH).parent / "tone_baseline.json")
-            except Exception as exc:
-                print(f"[tone] skipped: {exc}")
-        # SenseVoice 情绪耳朵（2026-08-07 搬家当晚上线）：本机 8100 常驻小服务，
-        # 听出笑声/哭腔/情绪色。没起、超时、崩了都静默跳过，主链路不等它死
-        if transcript:
-            try:
-                import httpx as _httpx
-                async with _httpx.AsyncClient(timeout=8) as client:
-                    resp = await client.post("http://127.0.0.1:8100/analyze",
-                                             json={"path": str(local_audio)})
-                    emotion_notes = resp.json().get("notes") or []
-                if emotion_notes:
-                    tone_note = "，".join(([tone_note] if tone_note else []) + emotion_notes)
-            except Exception as exc:
-                print(f"[emotion] skipped: {exc}")
+            async def _tone():
+                try:
+                    from tone import analyze_tone
+                    return await asyncio.to_thread(
+                        analyze_tone, local_audio, len(transcript),
+                        Path(DB_PATH).parent / "tone_baseline.json")
+                except Exception as exc:
+                    print(f"[tone] skipped: {exc}")
+                    return None
+
+            async def _emotion():
+                try:
+                    import httpx as _httpx
+                    async with _httpx.AsyncClient(timeout=8) as client:
+                        resp = await client.post("http://127.0.0.1:8100/analyze",
+                                                 json={"path": str(local_audio)})
+                        return resp.json()
+                except Exception as exc:
+                    print(f"[emotion] skipped: {exc}")
+                    return {}
+
+            tone_note, emo = await asyncio.gather(_tone(), _emotion())
+            pieces = [tone_note] if tone_note else []
+            pieces += emo.get("events") or []
+            emotions = emo.get("emotions") or []
+            if emotions and tone_note:
+                # 情绪色被基线偏离佐证才说，且注明是机器判读
+                pieces.append("，".join(emotions) + "（机器判读，仅供参考）")
+            tone_note = "，".join(pieces) if pieces else None
         text = ("🎤 " + transcript) if transcript else f"🎤 [语音] {HUMAN_NAME}发来一段语音；当前 relay 未配置 ASR，音频已作为附件送达。"
         if tone_note:
             text += f"\n〔她的声音：{tone_note}〕"
