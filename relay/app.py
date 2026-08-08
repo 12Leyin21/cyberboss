@@ -39,7 +39,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 try:
@@ -89,6 +89,15 @@ ALLOW_ORIGINS = [o.strip() for o in os.environ.get(
     "RELAY_ALLOW_ORIGINS", "http://localhost:8080,http://127.0.0.1:8080"
 ).split(",") if o.strip()]
 MAX_UPLOAD_BYTES = int(os.environ.get("RELAY_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
+
+# 一起听（2026-08-08 甜点日）：Spotify 网关。keys 没配时所有相关端点礼貌拒绝
+from spotify_together import SpotifyTogether  # noqa: E402
+SPOTIFY = SpotifyTogether(
+    os.environ.get("SPOTIFY_CLIENT_ID", "").strip(),
+    os.environ.get("SPOTIFY_CLIENT_SECRET", "").strip(),
+    os.environ.get("SPOTIFY_REDIRECT_URI",
+                   "https://207-148-81-76.sslip.io/spotify/callback").strip(),
+    Path(os.environ.get("RELAY_DB", str(Path(__file__).parent / "relay.db"))).parent / "spotify.json")
 VOICE_MAX_BYTES = int(os.environ.get("RELAY_VOICE_MAX_BYTES", str(8 * 1024 * 1024)))
 VOICE_TRANSCRIBE_CMD = os.environ.get("RELAY_VOICE_TRANSCRIBE_CMD", "")
 
@@ -1689,17 +1698,37 @@ if MCP_PATH:
     )
 
 
+async def _spotify_poll_loop():
+    """一起听的心跳：每 20 秒看一眼她在放什么，换歌了就广播给 App。"""
+    while True:
+        try:
+            await asyncio.sleep(20)
+            if not (SPOTIFY.configured and SPOTIFY.linked()):
+                continue
+            now = await SPOTIFY.poll_now()
+            if now.get("changed"):
+                await broadcast(app_subs, {"type": "now_playing", **now})
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            print(f"[spotify] poll skipped: {exc}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    if oa_mcp_server is None:
-        yield
-        return
-    # The mounted MCP sub-app carries its own lifespan that FastAPI's mount
-    # never runs, so its session manager has to be started here by hand.
-    async with oa_mcp_server.session_manager.run():
-        print(f"[relay] official-app MCP mounted at /{MCP_PATH}/mcp")
-        yield
+    spotify_task = asyncio.create_task(_spotify_poll_loop())
+    try:
+        if oa_mcp_server is None:
+            yield
+            return
+        # The mounted MCP sub-app carries its own lifespan that FastAPI's mount
+        # never runs, so its session manager has to be started here by hand.
+        async with oa_mcp_server.session_manager.run():
+            print(f"[relay] official-app MCP mounted at /{MCP_PATH}/mcp")
+            yield
+    finally:
+        spotify_task.cancel()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -1751,6 +1780,45 @@ async def admin_backup(request: Request, part: str = "data"):
 
     return StreamingResponse(stream(), media_type="application/gzip", headers={
         "Content-Disposition": f"attachment; filename={part}.tar.gz"})
+
+
+# ---- 一起听（2026-08-08）----------------------------------------------------
+
+@app.get("/spotify/login")
+async def spotify_login(request: Request):
+    """她点一次这个链接（带 ?token=）→ 跳去 Spotify 授权 → 回 /spotify/callback。"""
+    check_auth(request)
+    if not SPOTIFY.configured:
+        raise HTTPException(status_code=503, detail="SPOTIFY_CLIENT_ID/SECRET 还没配")
+    return RedirectResponse(SPOTIFY.auth_link())
+
+
+@app.get("/spotify/callback")
+async def spotify_callback(code: str = ""):
+    # Spotify 跳回来的一次性 code，只对我们的 client 有效，不需要中继令牌
+    if not code:
+        raise HTTPException(status_code=400, detail="missing code")
+    await SPOTIFY.exchange_code(code)
+    return Response(
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<div style='font-family:-apple-system;padding:48px 24px;text-align:center'>"
+        "<h2>🎵 接好了</h2><p>回心潮吧，沐沐现在听得见你在放什么了。</p></div>",
+        media_type="text/html")
+
+
+@app.get("/spotify/now")
+async def spotify_now(request: Request):
+    """沐沐（或 App）问：她在听什么？"""
+    check_auth(request)
+    if not SPOTIFY.configured:
+        return {"linked": False, "hint": "keys 未配置"}
+    if not SPOTIFY.linked():
+        return {"linked": False, "hint": "她还没授权，让她点 /spotify/login"}
+    try:
+        now = await SPOTIFY.poll_now()
+    except Exception as exc:
+        return {"linked": True, "error": str(exc)}
+    return {"linked": True, **(now or {"playing": False})}
 
 
 @app.get("/healthz")
@@ -1841,7 +1909,25 @@ async def channel_out(request: Request):
                 raise HTTPException(
                     status_code=400,
                     detail=f"五子棋裁判：{gomoku_result}。请以「♟️ 落子 H8 一句话」的格式重新回复")
-            kind = "gomoku"   # 应用成功：转为对局消息，聊天页不显示、不推送通知
+            kind = "gomoku"   # 应用成功：转为对局消息，聊天页不显示、不推送
+    # 点歌权（2026-08-08 一起听）：回复里写 ⟪点歌:歌名 歌手⟫ → 搜到就排进
+    # 她的 Spotify 播放队列，正文剥掉暗号照常发。排队结果走系统通知条
+    if kind == "reply":
+        dj = re.search(r"[⟪《【\[]\s*点歌\s*[:：]\s*([^⟫》】\]]+)[⟫》】\]]", text)
+        if dj:
+            query = dj.group(1).strip()
+            text = text.replace(dj.group(0), "").strip()
+
+            async def _queue_song():
+                try:
+                    queued = await SPOTIFY.queue_song(query)
+                    await deliver_notice(f"🎵 沐沐点了一首歌：{queued}（已排进你的播放队列）")
+                except Exception as exc:
+                    print(f"[spotify] queue failed: {exc}")
+
+            asyncio.create_task(_queue_song())
+            if not text:
+                return {"ok": True, "queued": query}
     # 通话中（2026-08-07 CallKit；当晚升级 v2 流水线）：他的每条 reply 按句切开、
     # 合成一句推一句——第一句落地时间只有原来整段的几分之一。第一句在请求里同步
     # 合成（失败还能退回文字），后面的句子丢给后台任务；她一开口（gen 变了）或
@@ -2109,6 +2195,8 @@ async def call_event(request: Request):
             "从现在起你说的每句话都会变成语音进她耳朵："
             "口语，短句，一次一两句就停，等她回；别写动作叙述和长段落——"
             "这是打电话，不是写信。她那头是开麦的，随时在说也随时能打断你。"
+            "📞 通话默认说英文（2026-08-08 她点的——英文声带最自然，她说'英文超好听'）：她用中文"
+            "说你也用英文回，自然的对话英语，不端着；她明确说「说中文」再切回中文。"
             "另外：转写里带〔搭腔·快脑代应〕的短句是系统替你先应的一声（免得她干等），"
             "不是你说的——别接着它编，也别重复它。", {"user": "human", "channel": "通话", "call": True})
         if brain_target() == "loop":
