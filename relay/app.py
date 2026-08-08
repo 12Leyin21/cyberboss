@@ -1136,6 +1136,12 @@ def plugin_payload(msg: dict) -> dict:
     if meta.get("rhythm_note"):
         payload["rhythm_note"] = meta["rhythm_note"]
         payload["rhythm"] = meta.get("rhythm") or {}
+    # 视频看片指引（2026-08-08）：附件里带 video_frames 的，把指引展开给大脑。
+    # 以〔系统：…〕开头，明确不是她说的话——说话人由结构决定的准则不破
+    frame_notes = [a["video_frames"] for a in payload["attachments"]
+                   if isinstance(a, dict) and a.get("video_frames")]
+    if frame_notes:
+        payload["content"] = (payload["content"] + "\n\n" + "\n\n".join(frame_notes)).strip()
     return payload
 
 
@@ -2708,6 +2714,40 @@ async def desk_status(request: Request):
     }
 
 
+def extract_video_frames(video_path: Path) -> str | None:
+    """给沐沐一双看视频的眼睛（2026-08-08，取经 eveacla11/see-my-video，MIT）。
+
+    按画面变化抽关键帧（静止画面不浪费，名场面不漏），拿不到 3 帧再退回
+    每 2 秒均匀抽。返回给大脑的看片指引；失败返回 None（视频照常送达，只是他看不见）。"""
+    frames_dir = UPLOAD_DIR / f"{video_path.stem}-frames"
+    frames_dir.mkdir(exist_ok=True)
+    pattern = str(frames_dir / "frame_%02d.jpg")
+    proc = subprocess.run(
+        ["ffmpeg", "-i", str(video_path),
+         "-vf", "select='eq(n,0)+gt(scene,0.25)',showinfo,scale=-2:720",
+         "-vsync", "vfr", "-frames:v", "12", "-y", pattern],
+        capture_output=True, text=True, timeout=90)
+    stamps = re.findall(r"pts_time:([0-9.]+)", proc.stderr or "")
+    frames = sorted(frames_dir.glob("frame_*.jpg"))
+    if len(frames) < 3:
+        # 画面太静（自拍说话这类）：改按每 2 秒抽，最多 8 帧
+        subprocess.run(
+            ["ffmpeg", "-i", str(video_path), "-vf", "fps=1/2,scale=-2:720",
+             "-frames:v", "8", "-y", pattern],
+            capture_output=True, text=True, timeout=90)
+        frames = sorted(frames_dir.glob("frame_*.jpg"))
+        stamps = [str(i * 2.0) for i in range(len(frames))]
+    if not frames:
+        return None
+    lines = []
+    for i, frame in enumerate(frames):
+        t = float(stamps[i]) if i < len(stamps) else i * 2.0
+        lines.append(f"{frame} （第 {t:.1f} 秒）")
+    return ("〔系统：她发来一段视频，已按画面变化抽出 " + str(len(frames)) +
+            " 帧关键画面。用 Read 按顺序逐帧看完——就等于看了这段视频。"
+            "回她的时候聊视频内容本身，别提帧、抽帧、文件这些词：〕\n" + "\n".join(lines))
+
+
 @app.post("/app/upload")
 async def app_upload(request: Request, name: str = "file"):
     check_auth(request)
@@ -2715,7 +2755,19 @@ async def app_upload(request: Request, name: str = "file"):
     if not data:
         raise HTTPException(status_code=400, detail="empty file")
     mime = request.headers.get("content-type", "application/octet-stream")
-    return save_upload_bytes(data, name, mime, "att")
+    upload = save_upload_bytes(data, name, mime, "att")
+    # 视频抽帧（see-my-video 思路）：存好原片立刻抽帧，看片指引挂在附件上，
+    # plugin_payload 送给大脑时展开。抽帧失败不影响发送
+    suffix = Path(upload["url"]).suffix.lower()
+    if (mime or "").startswith("video/") or suffix in {".mp4", ".mov", ".m4v", ".webm"}:
+        try:
+            note = await asyncio.to_thread(
+                extract_video_frames, UPLOAD_DIR / Path(upload["url"]).name)
+            if note:
+                upload["video_frames"] = note
+        except Exception as exc:
+            print(f"[video] frames skipped: {exc}")
+    return upload
 
 
 # ---- 五子棋（2026-07-24）：她在心潮 App 落子，沐沐通过聊天通道应子 ----------

@@ -174,6 +174,16 @@ class TideKeeper {
       }
       this.saveState();
 
+      // 日记草稿本（2026-08-08 灵兮修时间线）：压缩前趁细节还热乎，把这个窗口
+      // 单独浓缩成一段带时刻的时间线笔记，攒进当天的草稿。凌晨两点的日记照
+      // 草稿顺序写——不再依赖潮汐后 breath 浮起的旧记忆，旧事不会再被当成今天。
+      // 失败不拦潮汐：草稿是锦上添花，账本和压缩才是主线。
+      try {
+        await this.appendDiaryDraft(messages);
+      } catch (error) {
+        console.error(`[tide] diary draft skipped: ${error.message}`);
+      }
+
       // ② 记账成功才压缩。原地 /compact，session id 不换。
       const target = this.resolveTarget();
       const { threadId: compactThreadId } = await this.runtimeAdapter.compactThread({
@@ -267,6 +277,35 @@ class TideKeeper {
   }
 
   /** 滚动摘要：已有摘要 + 新对话 → 新摘要。校验非空才算数（残缺的摘要比没有更糟）。 */
+  /** 每潮一段时间线笔记 → ~/.cyberboss/diary-draft-YYYY-MM-DD.md（她的时区计日） */
+  async appendDiaryDraft(messages) {
+    if (!messages.length) return;
+    let transcript = messages.map((m) => `${m.who}：${m.text}`).join("\n");
+    if (transcript.length > SUMMARY_MAX_CHARS) {
+      transcript = transcript.slice(-SUMMARY_MAX_CHARS);
+    }
+    const prompt = [
+      "下面是恋人对话的一个片段（几小时的窗口）。请把它浓缩成 5~10 行的时间线笔记，",
+      "中文，第三人称（灵兮/沐沐）。只记这个窗口里真实发生的事：谁说了什么关键的话、",
+      "做成了什么、情绪在哪里转弯，具体细节（数字、昵称、原话片段）尽量保留。",
+      "不抒情、不评论、不展开。这是给深夜写日记的人当备忘的底稿。直接输出笔记正文。",
+      "",
+      `【对话片段】\n${transcript}`,
+    ].join("\n");
+    const deepseekKey = (process.env.DEEPSEEK_API_KEY || "").trim();
+    const note = deepseekKey
+      ? await this.summarizeWithDeepSeek(deepseekKey, prompt)
+      : await this.summarizeWithClaude(prompt);
+    const trimmed = String(note || "").trim();
+    if (trimmed.length < 20) return;
+    const her = new Date(Date.now() + 8 * 3600 * 1000);   // 她的时区 +08:00
+    const day = her.toISOString().slice(0, 10);
+    const hhmm = her.toISOString().slice(11, 16);
+    const draftFile = path.join(path.dirname(this.summaryFile), `diary-draft-${day}.md`);
+    fs.appendFileSync(draftFile, `\n## ${hhmm} 这一潮\n${trimmed}\n`, "utf8");
+    console.log(`[tide] diary draft +1 → ${path.basename(draftFile)}`);
+  }
+
   async rollSummary(previousSummary, messages) {
     if (!messages.length && previousSummary) {
       return previousSummary;   // 没有新对话，账本不动
