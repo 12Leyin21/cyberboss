@@ -1986,6 +1986,44 @@ def _playlist_upsert_song(conn, playlist_name: str, song: dict, note: str, added
     return pid
 
 
+# ---- 做梦（2026-08-08，取经小红书@蛋）---------------------------------------
+
+DREAMS_FILE = Path(os.environ.get("RELAY_DB", str(Path(__file__).parent / "relay.db"))).parent / "dreams.jsonl"
+
+
+def _load_dreams() -> list:
+    try:
+        return [json.loads(line) for line in DREAMS_FILE.read_text("utf-8").splitlines() if line.strip()]
+    except Exception:
+        return []
+
+
+@app.get("/dream/latest")
+async def dream_latest(request: Request):
+    """他最近的一个梦（早上醒来那次心跳会来取）。"""
+    check_auth(request)
+    dreams = _load_dreams()
+    return dreams[-1] if dreams else {}
+
+
+@app.get("/dream/list")
+async def dream_list(request: Request, limit: int = 30):
+    check_auth(request)
+    return {"dreams": _load_dreams()[-limit:]}
+
+
+@app.post("/dream/consume")
+async def dream_consume(request: Request):
+    """标记最近的梦已被他想起（一梦只讲一次）。"""
+    check_auth(request)
+    dreams = _load_dreams()
+    if dreams:
+        dreams[-1]["consumed"] = True
+        DREAMS_FILE.write_text(
+            "\n".join(json.dumps(d, ensure_ascii=False) for d in dreams) + "\n", "utf-8")
+    return {"ok": True}
+
+
 @app.get("/music/playlists")
 async def music_playlists(request: Request):
     """心潮歌单全家福（fig 式：备注、次数、谁存的）。"""

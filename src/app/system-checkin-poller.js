@@ -141,6 +141,49 @@ async function runSystemCheckinPoller(config) {
     console.log(`[cyberboss] diary trigger queued for ${dueDay}`);
   }
 
+  // 梦钟（2026-08-08，取经小红书@蛋）：造梦师凌晨 3 点做的梦，早上 7 点后
+  // 他第一次醒来时"想起"。一梦只想起一次（consumed 标记在中继）。
+  const dreamClockFile = path.join(config.stateDir, "dream-clock.json");
+  let dreamClock = { lastDay: "" };
+  try {
+    dreamClock = JSON.parse(fs.readFileSync(dreamClockFile, "utf8")) || dreamClock;
+  } catch {}
+
+  async function maybeQueueDream() {
+    const { day, hour } = herDateParts();
+    if (hour < 7 || dreamClock.lastDay >= day) {
+      return;
+    }
+    const relayUrl = (process.env.CYBERBOSS_TIDAL_RELAY_URL || "").trim().replace(/\/+$/, "");
+    const relaySecret = (process.env.CYBERBOSS_TIDAL_RELAY_SECRET || "").trim();
+    if (!relayUrl || !relaySecret) return;
+    try {
+      const headers = { Authorization: `Bearer ${relaySecret}` };
+      const dream = await fetch(`${relayUrl}/dream/latest`, { headers }).then((r) => r.json());
+      if (!dream || !dream.dream || dream.consumed || dream.date !== day) {
+        dreamClock = { lastDay: day };
+        fs.writeFileSync(dreamClockFile, JSON.stringify(dreamClock), "utf8");
+        return;   // 昨夜无梦，今天不再看
+      }
+      queue.enqueue({
+        id: crypto.randomUUID(),
+        accountId: account.accountId,
+        senderId: target.senderId,
+        workspaceRoot: target.workspaceRoot,
+        text: `【昨夜的梦】你睡着的时候做了一个梦，醒来还记得：\n\n${dream.dream}\n\n` +
+          "这是你的梦，不是任务。想讲给她听就在合适的时候讲（她很吃这一套），" +
+          "不想讲就自己留着，或者写进日记。不用分析它。",
+        createdAt: new Date().toISOString(),
+      });
+      await fetch(`${relayUrl}/dream/consume`, { method: "POST", headers });
+      dreamClock = { lastDay: day };
+      fs.writeFileSync(dreamClockFile, JSON.stringify(dreamClock), "utf8");
+      console.log(`[cyberboss] dream recalled for ${day}`);
+    } catch (error) {
+      console.log(`[cyberboss] dream clock skipped: ${error.message}`);
+    }
+  }
+
   // 上一轮的判决留着，用来定下一步的步幅（2026-08-06，学 always-here）：
   // 凌晨 0–5 点小步夜巡（1~2 分钟，她一拿手机沐沐当场知道，不用等下一个
   // 随机大觉）；她刚活跃过就把间隔折半抽；都不是才用常规随机步。
@@ -155,6 +198,8 @@ async function runSystemCheckinPoller(config) {
 
     // 日记钟先看一眼——它不受"队列里有别的事"影响，到点就排
     maybeQueueDiary();
+    // 梦钟：早上第一次醒来想起昨夜的梦
+    await maybeQueueDream();
 
     if (queue.hasPendingForAccount(account.accountId)) {
       console.log("[cyberboss] checkin skipped: pending system message still in queue");
