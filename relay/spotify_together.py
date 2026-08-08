@@ -123,6 +123,22 @@ class SpotifyTogether:
         self.now = now
         return now
 
+    async def control(self, action: str) -> None:
+        """遥控她的播放器：play / pause / next / previous。"""
+        token = await self._access_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        async with httpx.AsyncClient(timeout=15) as client:
+            if action in ("next", "previous"):
+                resp = await client.post(API + f"/me/player/{action}", headers=headers)
+            elif action == "pause":
+                resp = await client.put(API + "/me/player/pause", headers=headers)
+            elif action == "play":
+                resp = await client.put(API + "/me/player/play", headers=headers)
+            else:
+                raise RuntimeError(f"unknown action {action}")
+            if resp.status_code not in (200, 204):
+                raise RuntimeError(f"{action} http {resp.status_code}")
+
     async def queue_song(self, query: str) -> str:
         """搜歌并排进她的播放队列。返回排进去的「歌名 - 歌手」，失败抛异常。"""
         token = await self._access_token()

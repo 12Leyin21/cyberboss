@@ -1821,6 +1821,19 @@ async def spotify_now(request: Request):
     return {"linked": True, **(now or {"playing": False})}
 
 
+@app.post("/spotify/control")
+async def spotify_control(request: Request):
+    """心潮音乐房间的遥控器：{"action": "play"|"pause"|"next"|"previous"}。"""
+    check_auth(request)
+    body = await request.json()
+    action = str(body.get("action") or "").strip()
+    try:
+        await SPOTIFY.control(action)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {"ok": True, "action": action}
+
+
 @app.get("/healthz")
 async def healthz():
     with db() as conn:
