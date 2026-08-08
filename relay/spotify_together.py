@@ -227,6 +227,23 @@ class SpotifyTogether:
             if resp.status_code not in (200, 204):
                 raise RuntimeError(f"seek http {resp.status_code}")
 
+    async def search_track(self, query: str):
+        """搜第一首匹配的歌，返回 {id, uri, track, artists} 或 None。"""
+        token = await self._access_token()
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(API + "/search",
+                                    headers={"Authorization": f"Bearer {token}"},
+                                    params={"q": query, "type": "track", "limit": 1})
+            if resp.status_code != 200:
+                return None
+            items = (resp.json().get("tracks") or {}).get("items") or []
+        if not items:
+            return None
+        track = items[0]
+        return {"id": track.get("id") or "", "uri": track.get("uri") or "",
+                "track": track.get("name") or "",
+                "artists": "、".join(a.get("name", "") for a in track.get("artists", []))}
+
     async def queue_song(self, query: str) -> str:
         """搜歌并排进她的播放队列。返回排进去的「歌名 - 歌手」，失败抛异常。"""
         token = await self._access_token()

@@ -2220,6 +2220,21 @@ async def channel_out(request: Request):
             asyncio.create_task(_queue_song())
             if not text:
                 return {"ok": True, "queued": query}
+    # 链接修理厂（2026-08-08）：他手写的 Spotify 链接 ID 是编的（模型通病），
+    # 按链接前那行歌名重搜换正确 ID；搜不到就拆掉假链接留文字
+    if kind == "reply" and "open.spotify.com/track/" in text:
+        try:
+            m = re.search(r"https://open\.spotify\.com/track/[A-Za-z0-9]+\S*", text)
+            if m:
+                prefix_lines = text[:m.start()].strip().splitlines()
+                query = re.sub(r"[🎵🎶🎧《》]", " ", prefix_lines[-1]).strip(" -–—:：") if prefix_lines else ""
+                found = await SPOTIFY.search_track(query) if query else None
+                if found and found["id"]:
+                    text = text.replace(m.group(0), f"https://open.spotify.com/track/{found['id']}")
+                else:
+                    text = text.replace(m.group(0), "").strip()
+        except Exception as exc:
+            print(f"[spotify] link repair skipped: {exc}")
     # 存歌权（2026-08-08 歌单系统）：⟪存歌:歌单名:备注⟫ → 把正在放的这首
     # 存进心潮歌单（没有就建），备注是他写给这首歌的话
     if kind == "reply":
