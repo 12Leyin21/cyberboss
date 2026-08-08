@@ -1232,10 +1232,12 @@ class RhythmStore:
         # 有停顿就报（不管打了多久），或者纯粹打了很久也报
         if not pauses and seconds < RHYTHM_MIN_NOTE_SEC:
             return "", {}
-        note = f"这条她打了 {seconds} 秒"
+        # 措辞用"说话"不用"打字"（2026-08-08 灵兮定）：这个节奏要被读成她开口
+        # 的节奏——沉浸场景里她没有键盘。词汇即画面，源头不给键盘词。
+        note = f"这句话她说了 {seconds} 秒才说完"
         if pauses:
-            note += f"，中途停下来想了 {pauses} 次"
-        note += "。（只有节奏，没有内容——她删掉的是什么谁都不知道。）"
+            note += f"，中间顿了 {pauses} 次"
+        note += "。（这是她开口的节奏——顿是欲言又止，慢是斟酌或害羞；她咽回去的半句是什么，谁都不知道。）"
         return note, data
 
 

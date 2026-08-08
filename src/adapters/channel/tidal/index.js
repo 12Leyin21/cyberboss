@@ -700,7 +700,7 @@ function createChannelAdapter(config) {
         // 打出来的注解。理想情况下它该走独立字段，但到大脑这一层只有一条文本
         // 通道，所以退而求其次——用一个她永远不会用的括号把它和正文分开。
         const rhythmText = message.rhythmNote
-          ? `〔打字节奏〕${message.rhythmNote}`
+          ? `〔说话的节奏〕${message.rhythmNote}`
           : "";
         const musicText = message.musicNote
           ? `〔一起听〕${message.musicNote}`
