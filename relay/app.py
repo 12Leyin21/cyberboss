@@ -1823,15 +1823,31 @@ async def spotify_now(request: Request):
 
 @app.post("/spotify/control")
 async def spotify_control(request: Request):
-    """心潮音乐房间的遥控器：{"action": "play"|"pause"|"next"|"previous"}。"""
+    """心潮音乐房间的遥控器：{"action": "play"|"pause"|"next"|"previous"|"seek", "position_s": 秒}。"""
     check_auth(request)
     body = await request.json()
     action = str(body.get("action") or "").strip()
     try:
-        await SPOTIFY.control(action)
+        if action == "seek":
+            await SPOTIFY.seek(int(body.get("position_s") or 0))
+        else:
+            await SPOTIFY.control(action)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     return {"ok": True, "action": action}
+
+
+@app.get("/spotify/lyrics")
+async def spotify_lyrics(request: Request, track: str = "", artists: str = ""):
+    """同步歌词（Spotify 出声，网易云出词——netease-music-mcp 的杂交致敬）。"""
+    check_auth(request)
+    if not track:
+        return {"lines": []}
+    from lyrics_netease import fetch_lyrics
+    lines = await asyncio.to_thread(
+        fetch_lyrics, track, artists,
+        Path(DB_PATH).resolve().parent / "lyrics-cache.json")
+    return {"lines": lines}
 
 
 @app.get("/healthz")

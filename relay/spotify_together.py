@@ -139,6 +139,16 @@ class SpotifyTogether:
             if resp.status_code not in (200, 204):
                 raise RuntimeError(f"{action} http {resp.status_code}")
 
+    async def seek(self, position_s: int) -> None:
+        """跳到某一秒（歌词点按跳转 / 进度条拖动）。"""
+        token = await self._access_token()
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.put(API + "/me/player/seek",
+                                    headers={"Authorization": f"Bearer {token}"},
+                                    params={"position_ms": max(0, position_s) * 1000})
+            if resp.status_code not in (200, 204):
+                raise RuntimeError(f"seek http {resp.status_code}")
+
     async def queue_song(self, query: str) -> str:
         """搜歌并排进她的播放队列。返回排进去的「歌名 - 歌手」，失败抛异常。"""
         token = await self._access_token()
