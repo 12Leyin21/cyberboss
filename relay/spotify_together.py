@@ -199,6 +199,24 @@ class SpotifyTogether:
                 "artists": "、".join(a.get("name", "") for a in item.get("artists", [])),
                 "cover": images[0].get("url", "")}
 
+    async def set_repeat(self, state: str) -> None:
+        """track = 单曲循环（交给 Spotify 原生做），off = 关。"""
+        token = await self._access_token()
+        async with httpx.AsyncClient(timeout=15) as client:
+            await client.put(API + "/me/player/repeat",
+                             headers={"Authorization": f"Bearer {token}"},
+                             params={"state": state})
+
+    async def queue_uri(self, uri: str) -> None:
+        """DJ 喂歌：把下一首排进她的播放队列。"""
+        token = await self._access_token()
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(API + "/me/player/queue",
+                                     headers={"Authorization": f"Bearer {token}"},
+                                     params={"uri": uri})
+            if resp.status_code not in (200, 204):
+                raise RuntimeError(f"queue http {resp.status_code}")
+
     async def seek(self, position_s: int) -> None:
         """跳到某一秒（歌词点按跳转 / 进度条拖动）。"""
         token = await self._access_token()

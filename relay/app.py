@@ -1730,16 +1730,84 @@ if MCP_PATH:
     )
 
 
+# 播放模式（2026-08-08 灵兮设计的按钮语义）：
+# repeat: all=所有歌单顺播(白循环) / one=单曲循环(粉循环1，Spotify原生) / playlist=当前歌单循环(粉循环)
+# shuffle: 随机开关(粉交叉)。armed: 只有从心潮歌单点播过才接管接歌，不劫持她自己放的专辑
+MUSIC_MODE_FILE = Path(os.environ.get("RELAY_DB", str(Path(__file__).parent / "relay.db"))).parent / "music-mode.json"
+try:
+    MUSIC_MODE = json.loads(MUSIC_MODE_FILE.read_text("utf-8"))
+except Exception:
+    MUSIC_MODE = {"repeat": "all", "shuffle": False, "playlist_id": None, "armed": False}
+
+
+def _save_music_mode():
+    try:
+        MUSIC_MODE_FILE.write_text(json.dumps(MUSIC_MODE), "utf-8")
+    except Exception:
+        pass
+
+
+_DJ_STATE = {"queued_for": "", "last_queued": ""}
+
+
+def _dj_pool() -> list:
+    """DJ 的曲库：playlist 模式 = 当前歌单；all 模式 = 所有歌单的歌（保序去重）。"""
+    with db() as conn:
+        if MUSIC_MODE.get("repeat") == "playlist" and MUSIC_MODE.get("playlist_id"):
+            rows = conn.execute(
+                "SELECT uri FROM music_playlist_songs WHERE playlist_id = ? ORDER BY id",
+                (MUSIC_MODE["playlist_id"],)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT uri FROM music_playlist_songs ORDER BY playlist_id, id").fetchall()
+    seen, pool = set(), []
+    for r in rows:
+        if r["uri"] and r["uri"] not in seen:
+            seen.add(r["uri"])
+            pool.append(r["uri"])
+    return pool
+
+
+def _dj_pick_next(current_uri: str, pool: list) -> str:
+    if not pool:
+        return ""
+    candidates = [u for u in pool if u != current_uri] or pool
+    if MUSIC_MODE.get("shuffle"):
+        return random.choice(candidates)
+    if current_uri in pool:
+        return pool[(pool.index(current_uri) + 1) % len(pool)]
+    return pool[0]
+
+
 async def _spotify_poll_loop():
-    """一起听的心跳：每 20 秒看一眼她在放什么，换歌了就广播给 App。"""
+    """一起听的心跳：每 15 秒看一眼她在放什么，换歌广播给 App；
+    DJ 引擎：快放完时把模式选出的下一首悄悄排进队列，接歌无缝。"""
     while True:
         try:
-            await asyncio.sleep(20)
+            await asyncio.sleep(15)
             if not (SPOTIFY.configured and SPOTIFY.linked()):
                 continue
             now = await SPOTIFY.poll_now()
             if now.get("changed"):
                 await broadcast(app_subs, {"type": "now_playing", **now})
+            # ── DJ：只在武装状态 + 非单曲循环时接管接歌
+            if not (now.get("playing") and MUSIC_MODE.get("armed")):
+                continue
+            if MUSIC_MODE.get("repeat") == "one":
+                continue
+            cur = now.get("uri") or ""
+            pool = _dj_pool()
+            if cur not in pool and cur != _DJ_STATE.get("last_queued"):
+                # 她在放自己的专辑：DJ 安静旁观（不劫持、也不缴械——
+                # 她哪天点回歌单里的歌，接歌立刻恢复）
+                continue
+            remaining = (now.get("duration_s") or 0) - (now.get("progress_s") or 0)
+            if 0 < remaining <= 25 and _DJ_STATE.get("queued_for") != cur:
+                nxt = _dj_pick_next(cur, pool)
+                if nxt:
+                    await SPOTIFY.queue_uri(nxt)
+                    _DJ_STATE["queued_for"] = cur
+                    _DJ_STATE["last_queued"] = nxt
         except asyncio.CancelledError:
             return
         except Exception as exc:
@@ -1850,7 +1918,7 @@ async def spotify_now(request: Request):
         now = await SPOTIFY.poll_now()
     except Exception as exc:
         return {"linked": True, "error": str(exc)}
-    return {"linked": True, **(now or {"playing": False})}
+    return {"linked": True, "mode": MUSIC_MODE, **(now or {"playing": False})}
 
 
 @app.post("/spotify/control")
@@ -1950,7 +2018,7 @@ async def music_song_delete(song_id: int, request: Request):
 
 @app.post("/spotify/play")
 async def spotify_play_track(request: Request):
-    """歌单点播：{"uri": "spotify:track:..."}，没有活跃设备自动唤醒一台。"""
+    """歌单点播：{"uri", "playlist_id"?}。点播即武装 DJ（接管接歌），记住歌单上下文。"""
     check_auth(request)
     body = await request.json()
     uri = str(body.get("uri") or "").strip()
@@ -1960,7 +2028,36 @@ async def spotify_play_track(request: Request):
         await SPOTIFY.play_track(uri)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+    if body.get("playlist_id"):
+        MUSIC_MODE["playlist_id"] = int(body["playlist_id"])
+    MUSIC_MODE["armed"] = True
+    _save_music_mode()
+    _DJ_STATE["queued_for"] = ""
     return {"ok": True}
+
+
+@app.get("/music/mode")
+async def music_mode_get(request: Request):
+    check_auth(request)
+    return MUSIC_MODE
+
+
+@app.post("/music/mode")
+async def music_mode_set(request: Request):
+    """{"repeat"?: all|one|playlist, "shuffle"?: bool}。one 交给 Spotify 原生单曲循环。"""
+    check_auth(request)
+    body = await request.json()
+    if body.get("repeat") in ("all", "one", "playlist"):
+        MUSIC_MODE["repeat"] = body["repeat"]
+        try:
+            await SPOTIFY.set_repeat("track" if body["repeat"] == "one" else "off")
+        except Exception as exc:
+            print(f"[music] set_repeat skipped: {exc}")
+    if body.get("shuffle") is not None:
+        MUSIC_MODE["shuffle"] = bool(body["shuffle"])
+    MUSIC_MODE["armed"] = True   # 动了模式钮 = 想让心潮当 DJ
+    _save_music_mode()
+    return MUSIC_MODE
 
 
 @app.get("/spotify/lyrics")
