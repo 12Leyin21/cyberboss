@@ -11,6 +11,7 @@ const { buildTerminalHelpText } = require("./core/command-registry");
 const { ensureStickerCatalogFilesSync } = require("./services/sticker-service");
 const { createProjectTooling } = require("./tools/create-project-tooling");
 const { runToolMcpServer } = require("./tools/mcp-stdio-server");
+const { createChannelAdapter } = require("./adapters/channel/tidal");
 
 function ensureDefaultStateDirectory() {
   fs.mkdirSync(path.join(os.homedir(), ".cyberboss"), { recursive: true });
@@ -136,7 +137,13 @@ async function main() {
   if (command === "tool-mcp-server") {
     const runtimeId = readFlagValue(argv.slice(1), "--runtime-id") || "";
     const workspaceRoot = readFlagValue(argv.slice(1), "--workspace-root") || process.cwd();
-    const { toolHost } = createProjectTooling(config);
+    // 复合通道（心潮优先，微信兜底）——不传的话默认裸微信通道，表情包/文件
+    // 工具会直接撞上过期 token 的 ret=-2（2026-08-08 灵兮报的：表情包发不进心潮）。
+    // 这个进程收不到入站消息，lastOrigin 恒为默认值心潮，正合她定的规矩：
+    // 表情包和文件默认发心潮，微信只偶尔用。
+    const { toolHost } = createProjectTooling(config, {
+      channelAdapter: createChannelAdapter(config),
+    });
     runToolMcpServer({ toolHost, runtimeId, workspaceRoot });
     return;
   }
