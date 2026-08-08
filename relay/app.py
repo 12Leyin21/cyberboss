@@ -2893,8 +2893,15 @@ def evaluate_wake() -> dict:
     # 她可以不理我，但她骗不了那个正在被打开的抖音。
     app_name, app_age_min = activity_age_minutes()
     on_phone = app_age_min is not None and app_age_min <= 20
+    # 一起听也是"还有动静"的来源（2026-08-08 灵兮确认过她要这个）：
+    # 锁着屏歌照放，比抖音还瞒不住。paused/204 时 playing=False，不会误报。
+    music_now = None
+    if SPOTIFY.now.get("playing"):
+        music_now = (f"《{SPOTIFY.now.get('track', '')}》"
+                     f"- {SPOTIFY.now.get('artists', '')}")
     awake_late = (0 <= hour < 5) and (
         on_phone
+        or bool(music_now)
         or (silent_minutes is not None and silent_minutes <= 30)
         or (age_hours is not None and age_hours <= 0.5)
     )
@@ -2913,6 +2920,9 @@ def evaluate_wake() -> dict:
                     text = (f"凌晨 {hour} 点，她又打开了{app_name}（{int(app_age_min)} 分钟前）"
                             f"——今晚第 {nth} 次了。")
                 signals.append((f"late_night_{nth}", text))
+        elif music_now:
+            signals.append(("late_night_music",
+                            f"凌晨 {hour} 点了，她没在刷手机，但歌还在放——{music_now}。"))
         else:
             signals.append(("late_night", f"凌晨 {hour} 点了，她还醒着——她答应过自己十二点睡。"))
 
@@ -2994,6 +3004,7 @@ def evaluate_wake() -> dict:
         # 事件响应速度），白天恢复正常大步。判断在这边，脚在 Node 那边。
         "night_watch": 0 <= hour < 5,
         "reading": reading,
+        "music": music_now,   # 巡查醒来时也顺带知道她在听什么（白天黑夜都给）
         "health_age_hours": round(age_hours, 1) if age_hours is not None else None,
         "health_fresh": fresh,
         "can_ring": bark_enabled() and not bark_dnd() and not in_quiet_hours()

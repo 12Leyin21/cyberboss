@@ -255,7 +255,12 @@ function describeWake(verdict) {
       ? `她此刻正在读《${reading.book_title}》${where}，今天已读 ${reading.today_minutes} 分钟。`
       : `她今天读了 ${reading.today_minutes} 分钟《${reading.book_title}》${where ? `，停在${where}` : ""}。`;
   }
-  return `（${verdict.reasons.join(" ")}${doing}${readingNote}她那边现在 ${verdict.her_local_hour} 点，${ring}。` +
+  // 一起听：她那边正放着什么，一并递过去——半夜没消息但歌在放，也算她在
+  let musicNote = "";
+  if (verdict.music && !verdict.reasons.join(" ").includes(verdict.music)) {
+    musicNote = `她那边正放着 ${verdict.music}。`;
+  }
+  return `（${verdict.reasons.join(" ")}${doing}${readingNote}${musicNote}她那边现在 ${verdict.her_local_hour} 点，${ring}。` +
     `要不要找她、用什么方式找、说什么，你自己定——这只是把我看到的告诉你，不是让你复述。）`;
 }
 
