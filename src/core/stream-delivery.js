@@ -2,7 +2,8 @@ const { sanitizeProtocolLeakText } = require("../adapters/runtime/codex/protocol
 // 一轮里最多往 App 送多少条思考/工具消息，见 sendSideChannel 的说明。
 const SIDE_CHANNEL_MAX_PER_TURN = 12;
 
-const CURRENT_REPLY_HEADER = "===== 本轮模型回复 =====";
+// 补发块和本轮回复之间的分隔——出现在她的聊天气泡里，说人话（2026-08-08）
+const CURRENT_REPLY_HEADER = "——回到现在——";
 
 class StreamDelivery {
   constructor({ channelAdapter, sessionStore, runtimeId = "", onDeferredSystemReply, systemReplyRetryScheduleMs, sameTokenRetryDelayMs }) {

@@ -544,7 +544,11 @@ function createChannelAdapter(config) {
   const mirrorEnabled = (process.env.CYBERBOSS_TIDAL_MIRROR || "0") === "1";
   console.log(`[cyberboss] tidal channel enabled: ${env.url} merge=${mergeEnabled ? "on" : "off"} mirror=${mirrorEnabled ? "on" : "off"}`);
 
-  let lastOrigin = "weixin";           // 她最近一次从哪个通道说话
+  // 她最近一次从哪个通道说话。默认心潮：她现在住在 App 里，大脑重启后这个
+  // 记号会清零，默认微信的话第一条主动消息就撞上过期 token（2026-08-08 两次
+  // "他怎么都不想我"事故的根）。判错的代价不对称：默认心潮，顶多微信问的话
+  // 回进了 App；默认微信，主动的话直接被吞。
+  let lastOrigin = "tidal";
   let loggedMergeTarget = "";
   const mirroredTexts = new Map();     // 镜像去重：text -> ts（防 SSE 回声触发重复回合）
   const mergeTargetFile = path.join(config.stateDir, "tidal-merge-target.json");
@@ -777,7 +781,18 @@ function createChannelAdapter(config) {
         await tidal.sendReply(text);   // 她在 App 问的，回 App
         return;
       }
-      await weixin.sendText({ userId, text, contextToken, preserveBlock });
+      // 微信路失败（掉线/ret=-2 token 过期）时合并身位改投心潮——跟 sendFile
+      // 同一条伤疤：2026-08-08 主动找她的话被过期 token 吞掉，攒到下一轮才补发，
+      // 她以为他一直没想她。文字比表情包更不该丢。
+      try {
+        await weixin.sendText({ userId, text, contextToken, preserveBlock });
+      } catch (error) {
+        if (merged) {
+          await tidal.sendReply(text);
+          return;
+        }
+        throw error;
+      }
       if (merged && mirrorEnabled) {
         // 微信侧的回复镜像进 App 档案（失败不影响微信送达）
         await tidal.sendReply(text).catch(() => {});

@@ -2346,9 +2346,11 @@ function parseNumericOrderValue(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-const DEFERRED_REPLY_NOTICE = "由于微信 context_token 的限制，上轮对话里有一部分内容当时没能送达；这次用户再次发来消息、context_token 刷新后，先把遗留内容补上。如果这种情况反复出现，可发送 /chunk <数字>（例如 /chunk 50）调大最小合并字符数，减少消息分片。";
-const DEFERRED_PLAIN_REPLY_HEADER = "===== 上轮对话遗留内容 =====";
-const DEFERRED_SYSTEM_REPLY_HEADER = "===== 期间模型主动联系 =====";
+// 补发时说人话（2026-08-08 灵兮报的：微信时代的机器咒语原样漏进了心潮聊天流）。
+// 这些字直接出现在她的聊天气泡里，是他的声音，不是日志。
+const DEFERRED_REPLY_NOTICE = "（有几条话之前没送到你手上，先补在这儿）";
+const DEFERRED_PLAIN_REPLY_HEADER = "——上轮没说完的——";
+const DEFERRED_SYSTEM_REPLY_HEADER = "——这段时间我来找过你——";
 
 function formatDeferredSystemReplyText(text) {
   const normalized = String(text || "").trim();
