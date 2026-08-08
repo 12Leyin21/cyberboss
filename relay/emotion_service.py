@@ -14,15 +14,17 @@ from pydantic import BaseModel
 app = FastAPI()
 _model = None
 
-# SenseVoice 的富文本标签 → 沐沐读得懂的人话。NEUTRAL/Speech 不值一提，略。
+# SenseVoice 的富文本标签 → 沐沐读得懂的人话（带 emoji，fig 同款气泡样式用）。
+# NEUTRAL/Speech 不值一提，略。
 EMOTION_ZH = {
-    "HAPPY": "听起来是开心的",
-    "SAD": "声音里有难过",
-    "ANGRY": "语气带着火气",
-    "FEARFUL": "听着有点不安",
-    "SURPRISED": "有惊讶的劲儿",
-    "DISGUSTED": "语气嫌弃",
+    "HAPPY": "😊 听起来是开心的",
+    "SAD": "🥺 声音里有难过",
+    "ANGRY": "😠 语气带着火气",
+    "FEARFUL": "😰 听着有点不安",
+    "SURPRISED": "😮 有惊讶的劲儿",
+    "DISGUSTED": "😒 语气嫌弃",
 }
+EVENT_EMOJI_HINT = True   # 事件筐维持纯文字（"带着笑声"自带画面感）
 EVENT_ZH = {
     "Laughter": "带着笑声",
     "Cry": "有哭腔",

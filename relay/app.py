@@ -3210,11 +3210,30 @@ async def app_voice(request: Request):
         #   笑声/哭腔这类声音事件可靠，直接放行。两层并行跑，省 2-3 秒
         tone_note = None
         if transcript:
+            # m4a 语音条 librosa 解不开 → 先用 ffmpeg 转成 wav 再分析
+            #（2026-08-08 灵兮发现语音条一直没有语气标签，只有通话的 wav 有）
+            analysis_audio = local_audio
+            if local_audio.suffix.lower() != ".wav":
+                converted = local_audio.with_suffix(".analysis.wav")
+
+                def _transcode():
+                    subprocess.run(
+                        ["ffmpeg", "-i", str(local_audio), "-ar", "16000", "-ac", "1",
+                         "-y", str(converted)],
+                        capture_output=True, timeout=60)
+
+                try:
+                    await asyncio.to_thread(_transcode)
+                except Exception as exc:
+                    print(f"[tone] transcode skipped: {exc}")
+                if converted.exists():
+                    analysis_audio = converted
+
             async def _tone():
                 try:
                     from tone import analyze_tone
                     return await asyncio.to_thread(
-                        analyze_tone, local_audio, len(transcript),
+                        analyze_tone, analysis_audio, len(transcript),
                         Path(DB_PATH).parent / "tone_baseline.json")
                 except Exception as exc:
                     print(f"[tone] skipped: {exc}")
@@ -3225,7 +3244,7 @@ async def app_voice(request: Request):
                     import httpx as _httpx
                     async with _httpx.AsyncClient(timeout=8) as client:
                         resp = await client.post("http://127.0.0.1:8100/analyze",
-                                                 json={"path": str(local_audio)})
+                                                 json={"path": str(analysis_audio)})
                         return resp.json()
                 except Exception as exc:
                     print(f"[emotion] skipped: {exc}")
