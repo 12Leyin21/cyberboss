@@ -337,10 +337,15 @@ def init_db() -> None:
                 id      INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts      TEXT NOT NULL,
                 name    TEXT NOT NULL UNIQUE,
-                intro   TEXT NOT NULL DEFAULT ''
+                intro   TEXT NOT NULL DEFAULT '',
+                cover   TEXT NOT NULL DEFAULT ''
             )
             """
         )
+        try:   # 老库补列（2026-08-08 歌单封面）
+            conn.execute("ALTER TABLE music_playlists ADD COLUMN cover TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS music_playlist_songs (
@@ -1886,7 +1891,7 @@ async def music_playlists(request: Request):
     check_auth(request)
     with db() as conn:
         lists = [dict(r) for r in conn.execute(
-            "SELECT id, name, intro FROM music_playlists ORDER BY id").fetchall()]
+            "SELECT id, name, intro, cover FROM music_playlists ORDER BY id").fetchall()]
         for pl in lists:
             pl["songs"] = [dict(r) for r in conn.execute(
                 "SELECT id, uri, track, artists, cover, note, added_by, play_count "
@@ -1914,6 +1919,12 @@ async def music_playlist_save(request: Request):
         if body.get("intro") is not None:
             conn.execute("UPDATE music_playlists SET intro = ? WHERE name = ?",
                          (str(body.get("intro") or ""), name))
+        if body.get("cover") is not None:
+            conn.execute("UPDATE music_playlists SET cover = ? WHERE name = ?",
+                         (str(body.get("cover") or ""), name))
+        new_name = str(body.get("new_name") or "").strip()
+        if new_name and new_name != name:
+            conn.execute("UPDATE music_playlists SET name = ? WHERE name = ?", (new_name, name))
         conn.commit()
     return {"ok": True}
 

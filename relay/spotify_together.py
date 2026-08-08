@@ -29,6 +29,7 @@ class SpotifyTogether:
         self.store = store
         self.now: dict = {}          # 最近一次的正在播放
         self.last_track_id = ""
+        self._last_seen = 0.0        # 上次确认"在播放"的时刻（累计一起听用）
 
     @property
     def configured(self) -> bool:
@@ -124,6 +125,18 @@ class SpotifyTogether:
         }
         if track_id:
             self.last_track_id = track_id
+        # 累计一起听（2026-08-08 灵兮点的）：她在放歌的每一秒他都在陪听，
+        # 总秒数记在令牌文件里，跨天跨重启不清零
+        if now["playing"]:
+            elapsed = time.time() - self._last_seen if self._last_seen else 0
+            if 0 < elapsed <= 60:
+                tokens = self._tokens()
+                tokens["together_s"] = int(tokens.get("together_s", 0) + elapsed)
+                self._save_tokens(tokens)
+            self._last_seen = time.time()
+        else:
+            self._last_seen = 0.0
+        now["together_s"] = int(self._tokens().get("together_s", 0))
         self.now = now
         return now
 
