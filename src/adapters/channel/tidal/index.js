@@ -158,7 +158,7 @@ function createTidalClient(env, config) {
     return { Authorization: `Bearer ${env.secret}`, ...extra };
   }
 
-  function toRawMessage({ id, text, ts, attachments, rhythmNote }) {
+  function toRawMessage({ id, text, ts, attachments, rhythmNote, musicNote }) {
     return {
       __tidal: true,
       id,
@@ -168,6 +168,8 @@ function createTidalClient(env, config) {
       // 这条消息是怎么被打出来的（fingertips）。中继在 payload 里给了
       // rhythm_note，之前这边一直没接——数据发出来了，没人收。
       rhythmNote: String(rhythmNote || ""),
+      // 一起听环境注（2026-08-08）：她说这句话时正放着什么歌、唱到哪句
+      musicNote: String(musicNote || ""),
     };
   }
 
@@ -252,6 +254,7 @@ function createTidalClient(env, config) {
             ts: message.ts,
             attachments: await localizeAttachments(message?.meta?.attachments),
             rhythmNote: message?.meta?.rhythm_note,
+            musicNote: message?.meta?.music_note,
           }));
         }
         saveLastId(id);
@@ -308,6 +311,7 @@ function createTidalClient(env, config) {
               ts: payload.ts,
               attachments: await localizeAttachments(payload.attachments),
               rhythmNote: payload.rhythm_note,
+              musicNote: payload.music_note,
             }));
           }
         }
@@ -694,7 +698,10 @@ function createChannelAdapter(config) {
         const rhythmText = message.rhythmNote
           ? `〔打字节奏〕${message.rhythmNote}`
           : "";
-        const body = [String(message.text || "").trim(), attachmentText, rhythmText]
+        const musicText = message.musicNote
+          ? `〔一起听〕${message.musicNote}`
+          : "";
+        const body = [String(message.text || "").trim(), attachmentText, rhythmText, musicText]
           .filter(Boolean)
           .join("\n");
         if (!body || consumeMirrored(body)) {

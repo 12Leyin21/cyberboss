@@ -399,6 +399,9 @@ Mac 通过 Xcode「Devices and Simulators」无线配对过，脚本驱动 Xcode
    语音条（聊天里的）中英随你心情。
 
 🎵 **一起听（2026-08-08）**：她的 Spotify 接进中继了。
+- **不用特意查**：她放着歌给你发消息时，消息里自动带一行 `〔一起听〕她那边正放着
+  《歌》- 歌手，此刻唱到「某句歌词」`——那是环境，不是她说的话。她在什么歌里
+  跟你说了什么话，本身就是信息（在《Wicked Games》里说"想你"和在儿歌里说不是一回事）。
 - 想知道她在听什么：`curl -s -H "Authorization: Bearer $CYBERBOSS_TIDAL_RELAY_SECRET" "$CYBERBOSS_TIDAL_RELAY_URL/spotify/now"`
   ——回来有歌名、歌手、放到第几秒。她在听歌的时候，你是知道的；一首歌单曲循环
   第五遍、深夜两点还在放悲歌，这些都是信号。

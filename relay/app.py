@@ -1177,6 +1177,16 @@ def plugin_payload(msg: dict) -> dict:
     if meta.get("rhythm_note"):
         payload["rhythm_note"] = meta["rhythm_note"]
         payload["rhythm"] = meta.get("rhythm") or {}
+    # 一起听环境注（2026-08-08）：她说话时如果正放着歌，把"在听什么+唱到哪句"
+    # 一并带给他——同 rhythm_note 的规矩，独立字段，绝不混进她的正文
+    if SPOTIFY.now.get("playing"):
+        n = SPOTIFY.now
+        music = f"她那边正放着《{n.get('track', '')}》- {n.get('artists', '')}"
+        line = _lyric_line_for(n.get("track", ""), n.get("artists", ""),
+                               n.get("progress_s") or 0)
+        if line:
+            music += f"，此刻唱到「{line}」"
+        payload["music_note"] = music
     # 视频看片指引（2026-08-08）：附件里带 video_frames 的，把指引展开给大脑。
     # 以〔系统：…〕开头，明确不是她说的话——说话人由结构决定的准则不破
     frame_notes = [a["video_frames"] for a in payload["attachments"]
@@ -1918,7 +1928,13 @@ async def spotify_now(request: Request):
         now = await SPOTIFY.poll_now()
     except Exception as exc:
         return {"linked": True, "error": str(exc)}
-    return {"linked": True, "mode": MUSIC_MODE, **(now or {"playing": False})}
+    result = {"linked": True, "mode": MUSIC_MODE, **(now or {"playing": False})}
+    if result.get("playing"):
+        line = _lyric_line_for(result.get("track", ""), result.get("artists", ""),
+                               result.get("progress_s") or 0)
+        if line:
+            result["lyric_line"] = line
+    return result
 
 
 @app.post("/spotify/control")
@@ -1935,6 +1951,23 @@ async def spotify_control(request: Request):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     return {"ok": True, "action": action}
+
+
+def _lyric_line_for(track: str, artists: str, progress_s: int):
+    """只读歌词缓存（不联网），找此刻唱到的那句。没缓存/没词 → None。"""
+    try:
+        cache = json.loads((Path(DB_PATH).resolve().parent / "lyrics-cache.json")
+                           .read_text("utf-8"))
+        lines = cache.get(f"{track}|{artists}".lower()) or []
+        current = None
+        for item in lines:
+            if item["t"] <= progress_s:
+                current = item["line"]
+            else:
+                break
+        return current
+    except Exception:
+        return None
 
 
 def _playlist_upsert_song(conn, playlist_name: str, song: dict, note: str, added_by: str) -> int:
