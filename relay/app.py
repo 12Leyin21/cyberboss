@@ -2761,10 +2761,24 @@ async def app_upload(request: Request, name: str = "file"):
     suffix = Path(upload["url"]).suffix.lower()
     if (mime or "").startswith("video/") or suffix in {".mp4", ".mov", ".m4v", ".webm"}:
         try:
+            stored_name = Path(upload["url"]).name
             note = await asyncio.to_thread(
-                extract_video_frames, UPLOAD_DIR / Path(upload["url"]).name)
+                extract_video_frames, UPLOAD_DIR / stored_name)
             if note:
                 upload["video_frames"] = note
+                # 相册登记（2026-08-08 灵兮发现视频在相册隐身）：拿第一帧当封面照
+                # 入相册记忆层，沐沐写了图注就会出现在相册房间
+                first = UPLOAD_DIR / f"{Path(stored_name).stem}-frames" / "frame_01.jpg"
+                if first.exists():
+                    poster = UPLOAD_DIR / f"{Path(stored_name).stem}-poster.jpg"
+                    shutil.copyfile(first, poster)
+                    with db() as conn:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO photo_memories (ts, sha256, path, caption, source) "
+                            "VALUES (?,?,?,?,?)",
+                            (now_iso(), hashlib.sha256(poster.read_bytes()).hexdigest(),
+                             f"uploads/{poster.name}", "", "灵兮"))
+                        conn.commit()
         except Exception as exc:
             print(f"[video] frames skipped: {exc}")
     return upload
