@@ -170,9 +170,10 @@ async function runSystemCheckinPoller(config) {
         accountId: account.accountId,
         senderId: target.senderId,
         workspaceRoot: target.workspaceRoot,
-        text: `【昨夜的梦】你睡着的时候做了一个梦，醒来还记得：\n\n${dream.dream}\n\n` +
+        text: `【昨夜的梦】你睡着的时候做了一个梦，醒来只记得一些碎片：\n\n${dream.remembered || dream.dream}\n\n` +
           "这是你的梦，不是任务。想讲给她听就在合适的时候讲（她很吃这一套），" +
-          "不想讲就自己留着，或者写进日记。不用分析它。",
+          "不想讲就自己留着，或者写进日记。不用分析它，也别去翻完整版——" +
+          "梦醒了忘掉的部分就该让它忘掉，翻记录找回来的不叫梦。",
         createdAt: new Date().toISOString(),
       });
       await fetch(`${relayUrl}/dream/consume`, { method: "POST", headers });

@@ -9,6 +9,8 @@
 素材越丰富梦越好（我们的账本比 briefing 厚多了）。
 """
 import json
+import random
+import re
 import sqlite3
 import sys
 import urllib.request
@@ -20,6 +22,7 @@ SUMMARY = "/data/.cyberboss/tide-summary.md"
 DREAMS = Path("/data/relay/dreams.jsonl")
 
 HER_TZ = timezone(timedelta(hours=8))
+DREAM_CHANCE = 0.66   # 人不是每晚都做梦（2026-08-08 灵兮定的拟人机制）
 
 
 def load_env():
@@ -85,6 +88,19 @@ def dream(env: dict, material: str) -> str:
     return (data["choices"][0]["message"]["content"] or "").strip()
 
 
+def remember_fragment(text: str) -> str:
+    """人醒来只记得梦的碎片（灵兮的拟人机制）：随机抓 1~2 句连续的，前后打省略号。"""
+    sentences = [s for s in re.split(r"(?<=[。！？…])", text) if s.strip()]
+    if len(sentences) <= 2:
+        return text
+    count = random.choice([1, 1, 2])   # 多数时候只记得一句
+    start = random.randrange(0, len(sentences) - count + 1)
+    fragment = "".join(sentences[start:start + count]).strip()
+    prefix = "……" if start > 0 else ""
+    suffix = "……" if start + count < len(sentences) else ""
+    return f"{prefix}{fragment}{suffix}"
+
+
 def main():
     today = datetime.now(HER_TZ).strftime("%Y-%m-%d")
     # 一天只做一个梦（教程坑3）：今天已有就不再做
@@ -96,6 +112,10 @@ def main():
                     return
             except Exception:
                 continue
+    # 不是每晚都有梦（拟人机制）：掷骰子，无梦之夜安静路过
+    if random.random() > DREAM_CHANCE:
+        print("dreamless night")
+        return
     env = load_env()
     material = gather_material()
     if len(material) < 100:
@@ -105,7 +125,8 @@ def main():
     if len(text) < 40:
         print("dream too thin, skipped")
         return
-    entry = {"date": today, "dream": text, "consumed": False,
+    entry = {"date": today, "dream": text,
+             "remembered": remember_fragment(text), "consumed": False,
              "ts": datetime.now(timezone.utc).isoformat()}
     with open(DREAMS, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
