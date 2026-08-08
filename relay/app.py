@@ -333,6 +333,33 @@ def init_db() -> None:
         # 在这儿补上：他能搜到、能拿路径重新看一眼。
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS music_playlists (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts      TEXT NOT NULL,
+                name    TEXT NOT NULL UNIQUE,
+                intro   TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS music_playlist_songs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts          TEXT NOT NULL,
+                playlist_id INTEGER NOT NULL,
+                uri         TEXT NOT NULL,
+                track       TEXT NOT NULL,
+                artists     TEXT NOT NULL DEFAULT '',
+                cover       TEXT NOT NULL DEFAULT '',
+                note        TEXT NOT NULL DEFAULT '',
+                added_by    TEXT NOT NULL DEFAULT '灵兮',
+                play_count  INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(playlist_id, uri)
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS photo_memories (
                 id       INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts       TEXT NOT NULL,
@@ -1837,6 +1864,94 @@ async def spotify_control(request: Request):
     return {"ok": True, "action": action}
 
 
+def _playlist_upsert_song(conn, playlist_name: str, song: dict, note: str, added_by: str) -> int:
+    row = conn.execute("SELECT id FROM music_playlists WHERE name = ?", (playlist_name,)).fetchone()
+    if row:
+        pid = row["id"]
+    else:
+        pid = conn.execute("INSERT INTO music_playlists (ts, name) VALUES (?,?)",
+                           (now_iso(), playlist_name)).lastrowid
+    conn.execute(
+        "INSERT INTO music_playlist_songs (ts, playlist_id, uri, track, artists, cover, note, added_by) "
+        "VALUES (?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(playlist_id, uri) DO UPDATE SET note = CASE WHEN excluded.note != '' THEN excluded.note ELSE note END",
+        (now_iso(), pid, song.get("uri", ""), song.get("track", ""), song.get("artists", ""),
+         song.get("cover", ""), note, added_by))
+    return pid
+
+
+@app.get("/music/playlists")
+async def music_playlists(request: Request):
+    """心潮歌单全家福（fig 式：备注、次数、谁存的）。"""
+    check_auth(request)
+    with db() as conn:
+        lists = [dict(r) for r in conn.execute(
+            "SELECT id, name, intro FROM music_playlists ORDER BY id").fetchall()]
+        for pl in lists:
+            pl["songs"] = [dict(r) for r in conn.execute(
+                "SELECT id, uri, track, artists, cover, note, added_by, play_count "
+                "FROM music_playlist_songs WHERE playlist_id = ? ORDER BY id", (pl["id"],)).fetchall()]
+    return {"playlists": lists}
+
+
+@app.post("/music/playlists")
+async def music_playlist_save(request: Request):
+    """建歌单 / 往歌单存歌。{"name", "intro"?, "song"?: {uri,track,artists,cover}, "note"?, "added_by"?}
+    song 不传 = 只建歌单/改简介。"""
+    check_auth(request)
+    body = await request.json()
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="playlist name required")
+    with db() as conn:
+        song = body.get("song")
+        if isinstance(song, dict) and song.get("uri"):
+            _playlist_upsert_song(conn, name, song, str(body.get("note") or "").strip(),
+                                  str(body.get("added_by") or "灵兮").strip())
+        else:
+            conn.execute("INSERT OR IGNORE INTO music_playlists (ts, name) VALUES (?,?)",
+                         (now_iso(), name))
+        if body.get("intro") is not None:
+            conn.execute("UPDATE music_playlists SET intro = ? WHERE name = ?",
+                         (str(body.get("intro") or ""), name))
+        conn.commit()
+    return {"ok": True}
+
+
+@app.post("/music/song/{song_id}/played")
+async def music_song_played(song_id: int, request: Request):
+    check_auth(request)
+    with db() as conn:
+        conn.execute("UPDATE music_playlist_songs SET play_count = play_count + 1 WHERE id = ?",
+                     (song_id,))
+        conn.commit()
+    return {"ok": True}
+
+
+@app.delete("/music/song/{song_id}")
+async def music_song_delete(song_id: int, request: Request):
+    check_auth(request)
+    with db() as conn:
+        conn.execute("DELETE FROM music_playlist_songs WHERE id = ?", (song_id,))
+        conn.commit()
+    return {"ok": True}
+
+
+@app.post("/spotify/play")
+async def spotify_play_track(request: Request):
+    """歌单点播：{"uri": "spotify:track:..."}，没有活跃设备自动唤醒一台。"""
+    check_auth(request)
+    body = await request.json()
+    uri = str(body.get("uri") or "").strip()
+    if not uri:
+        raise HTTPException(status_code=400, detail="uri required")
+    try:
+        await SPOTIFY.play_track(uri)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {"ok": True}
+
+
 @app.get("/spotify/lyrics")
 async def spotify_lyrics(request: Request, track: str = "", artists: str = ""):
     """同步歌词（Spotify 出声，网易云出词——netease-music-mcp 的杂交致敬）。"""
@@ -1957,6 +2072,30 @@ async def channel_out(request: Request):
             asyncio.create_task(_queue_song())
             if not text:
                 return {"ok": True, "queued": query}
+    # 存歌权（2026-08-08 歌单系统）：⟪存歌:歌单名:备注⟫ → 把正在放的这首
+    # 存进心潮歌单（没有就建），备注是他写给这首歌的话
+    if kind == "reply":
+        keep = re.search(r"[⟪《【\[]\s*存歌\s*[:：]\s*([^:：⟫》】\]]+)(?:[:：]([^⟫》】\]]*))?[⟫》】\]]", text)
+        if keep:
+            playlist_name = keep.group(1).strip()
+            song_note = (keep.group(2) or "").strip()
+            text = text.replace(keep.group(0), "").strip()
+
+            async def _keep_song():
+                try:
+                    song = await SPOTIFY.current_uri()
+                    with db() as conn:
+                        _playlist_upsert_song(conn, playlist_name, song, song_note, "沐沐")
+                        conn.commit()
+                    await deliver_notice(
+                        f"🎵 沐沐把《{song['track']}》存进了歌单「{playlist_name}」"
+                        + (f"：{song_note}" if song_note else ""))
+                except Exception as exc:
+                    print(f"[music] keep failed: {exc}")
+
+            asyncio.create_task(_keep_song())
+            if not text:
+                return {"ok": True, "kept": playlist_name}
     # 通话中（2026-08-07 CallKit；当晚升级 v2 流水线）：他的每条 reply 按句切开、
     # 合成一句推一句——第一句落地时间只有原来整段的几分之一。第一句在请求里同步
     # 合成（失败还能退回文字），后面的句子丢给后台任务；她一开口（gen 变了）或

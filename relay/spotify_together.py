@@ -95,19 +95,23 @@ class SpotifyTogether:
         return tokens["access_token"]
 
     async def poll_now(self) -> dict:
-        """拉一次正在播放。没在放/没授权 → {}。返回 track 变化时带 changed=True。"""
+        """拉一次正在播放。暂停久了 Spotify 会装死返回 204——这时保留最后一首
+        （playing=False, stale=True），页面别塌成空白（2026-08-08 灵兮报的）。"""
         token = await self._access_token()
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(API + "/me/player/currently-playing",
                                     headers={"Authorization": f"Bearer {token}"})
         if resp.status_code == 204 or not resp.content:
-            self.now = {}
+            if self.now.get("track"):
+                self.now = {**self.now, "playing": False, "stale": True, "changed": False}
+                return self.now
             return {}
         resp.raise_for_status()
         data = resp.json()
         item = data.get("item") or {}
         track_id = item.get("id") or ""
         now = {
+            "uri": item.get("uri") or "",
             "track": item.get("name") or "",
             "artists": "、".join(a.get("name", "") for a in item.get("artists", [])),
             "album": (item.get("album") or {}).get("name") or "",
@@ -123,8 +127,18 @@ class SpotifyTogether:
         self.now = now
         return now
 
+    async def _pick_device(self, client, headers) -> str:
+        """暂停久了没有'活跃设备'——挑一台她的设备隔空唤醒（优先手机）。"""
+        resp = await client.get(API + "/me/player/devices", headers=headers)
+        devices = (resp.json().get("devices") or []) if resp.status_code == 200 else []
+        if not devices:
+            raise RuntimeError("她的 Spotify 全都关着，唤不醒")
+        phones = [d for d in devices if d.get("type") == "Smartphone"]
+        return (phones or devices)[0]["id"]
+
     async def control(self, action: str) -> None:
-        """遥控她的播放器：play / pause / next / previous。"""
+        """遥控她的播放器：play / pause / next / previous。
+        play 在没有活跃设备时自动挑一台唤醒（修'暂停久了播放键失灵'）。"""
         token = await self._access_token()
         headers = {"Authorization": f"Bearer {token}"}
         async with httpx.AsyncClient(timeout=15) as client:
@@ -134,10 +148,43 @@ class SpotifyTogether:
                 resp = await client.put(API + "/me/player/pause", headers=headers)
             elif action == "play":
                 resp = await client.put(API + "/me/player/play", headers=headers)
+                if resp.status_code == 404:
+                    device = await self._pick_device(client, headers)
+                    resp = await client.put(API + "/me/player/play", headers=headers,
+                                            params={"device_id": device})
             else:
                 raise RuntimeError(f"unknown action {action}")
             if resp.status_code not in (200, 204):
                 raise RuntimeError(f"{action} http {resp.status_code}")
+
+    async def play_track(self, uri: str) -> None:
+        """从头播某一首（歌单点播用）。没有活跃设备就先唤醒一台。"""
+        token = await self._access_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.put(API + "/me/player/play", headers=headers,
+                                    json={"uris": [uri]})
+            if resp.status_code == 404:
+                device = await self._pick_device(client, headers)
+                resp = await client.put(API + "/me/player/play", headers=headers,
+                                        params={"device_id": device}, json={"uris": [uri]})
+            if resp.status_code not in (200, 204):
+                raise RuntimeError(f"play_track http {resp.status_code}")
+
+    async def current_uri(self) -> dict:
+        """当前这首的完整名片（存歌单用）：uri/track/artists/cover。"""
+        token = await self._access_token()
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(API + "/me/player/currently-playing",
+                                    headers={"Authorization": f"Bearer {token}"})
+        if resp.status_code != 200 or not resp.content:
+            raise RuntimeError("现在没在放歌")
+        item = resp.json().get("item") or {}
+        images = (item.get("album") or {}).get("images") or [{}]
+        return {"uri": item.get("uri") or "",
+                "track": item.get("name") or "",
+                "artists": "、".join(a.get("name", "") for a in item.get("artists", [])),
+                "cover": images[0].get("url", "")}
 
     async def seek(self, position_s: int) -> None:
         """跳到某一秒（歌词点按跳转 / 进度条拖动）。"""
