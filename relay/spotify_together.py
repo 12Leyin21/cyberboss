@@ -244,4 +244,8 @@ class SpotifyTogether:
             if resp.status_code not in (200, 204):
                 raise RuntimeError(f"排队失败 http {resp.status_code}（她的 Spotify 要在放歌才有队列）")
         artists = "、".join(a.get("name", "") for a in track.get("artists", []))
-        return f"{track.get('name')} - {artists}"
+        return {"label": f"{track.get('name')} - {artists}",
+                "track": track.get("name") or "",
+                "artists": artists,
+                "uri": track.get("uri") or "",
+                "id": track.get("id") or ""}

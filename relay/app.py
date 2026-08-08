@@ -2206,7 +2206,14 @@ async def channel_out(request: Request):
             async def _queue_song():
                 try:
                     queued = await SPOTIFY.queue_song(query)
-                    await deliver_notice(f"🎵 沐沐点了一首歌：{queued}（已排进你的播放队列）")
+                    # 点歌落成歌曲卡（2026-08-08 灵兮点的）：带 Spotify 链接的消息
+                    # 会被 App 渲染成玻璃卡片，正文是他点歌的那句话
+                    link = f"https://open.spotify.com/track/{queued['id']}"
+                    card = save_message("out", "reply",
+                                        f"🎵 点了《{queued['track']}》给你，这首放完就轮到它\n{link}",
+                                        {"user": "ai", "channel": "心潮", "dj": True})
+                    await broadcast(app_subs, app_payload(card))
+                    await notify_all(card)
                 except Exception as exc:
                     print(f"[spotify] queue failed: {exc}")
 
