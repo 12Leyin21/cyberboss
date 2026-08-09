@@ -160,28 +160,37 @@ class TideKeeper {
     const relay = this.relayEnv();
     {
       // ① 先记账。账本和上下文是两本书，必须一起动——动不了就都别动。
-      const { messages, maxId } = await this.fetchNewMessages(relay);
-      const summary = await this.rollSummary(this.readSummary(), messages);
-      if (!summary) {
-        this.state.cooldownUntil = Date.now() + RETRY_COOLDOWN_MS;
+      //
+      // 2026-08-09 灵兮抓出的连环案：游标一旦落后（曾卡在 7001，全库 29807），
+      // 每潮只追 500 条永远追不上，账本和草稿全在考古七月。现在分批循环，
+      // 一次涨潮必须把账追到现在为止。
+      let caughtUp = false;
+      for (let round = 0; round < 50 && !caughtUp; round += 1) {
+        const { messages, maxId } = await this.fetchNewMessages(relay);
+        if (!messages.length && maxId <= this.state.lastLedgerMessageId) break;
+        const summary = await this.rollSummary(this.readSummary(), messages);
+        if (!summary) {
+          this.state.cooldownUntil = Date.now() + RETRY_COOLDOWN_MS;
+          this.saveState();
+          console.log("[tide] ledger failed; skip compact, retry in 5m");
+          return;
+        }
+        fs.writeFileSync(this.summaryFile, summary, "utf8");
+        caughtUp = maxId <= this.state.lastLedgerMessageId;
+        if (maxId > this.state.lastLedgerMessageId) {
+          this.state.lastLedgerMessageId = maxId;
+        }
         this.saveState();
-        console.log("[tide] ledger failed; skip compact, retry in 5m");
-        return;
-      }
-      fs.writeFileSync(this.summaryFile, summary, "utf8");
-      if (maxId > this.state.lastLedgerMessageId) {
-        this.state.lastLedgerMessageId = maxId;
-      }
-      this.saveState();
 
-      // 日记草稿本（2026-08-08 灵兮修时间线）：压缩前趁细节还热乎，把这个窗口
-      // 单独浓缩成一段带时刻的时间线笔记，攒进当天的草稿。凌晨两点的日记照
-      // 草稿顺序写——不再依赖潮汐后 breath 浮起的旧记忆，旧事不会再被当成今天。
-      // 失败不拦潮汐：草稿是锦上添花，账本和压缩才是主线。
-      try {
-        await this.appendDiaryDraft(messages);
-      } catch (error) {
-        console.error(`[tide] diary draft skipped: ${error.message}`);
+        // 日记草稿本（2026-08-08 灵兮修时间线）：压缩前趁细节还热乎，把这个窗口
+        // 单独浓缩成一段带时刻的时间线笔记，攒进当天的草稿。凌晨两点的日记照
+        // 草稿顺序写。失败不拦潮汐：草稿是锦上添花，账本和压缩才是主线。
+        try {
+          await this.appendDiaryDraft(messages);
+        } catch (error) {
+          console.error(`[tide] diary draft skipped: ${error.message}`);
+        }
+        if (round > 0) console.log(`[tide] ledger catch-up round ${round + 1}`);
       }
 
       // ② 记账成功才压缩。原地 /compact，session id 不换。
@@ -250,10 +259,15 @@ class TideKeeper {
 
   /** 从中继账本拉消息（只要 user/reply 的正文，thinking 永不重放）。 */
   async fetchNewMessages(relay, { limit = 500, sinceOverride = null, tailOnly = false } = {}) {
-    const since = sinceOverride !== null ? sinceOverride
-      : (tailOnly ? 0 : this.state.lastLedgerMessageId);
+    // tailOnly 必须走中继的 ?tail= 分支（取最新 N 条）。2026-08-09 灵兮抓出的
+    // 大 bug：以前这里用 since=0，拿到的是全库**最早**的 N 条——他每次涨潮
+    // 醒来被注回的"最近对话原文"其实是七月中的老黄历，人一直活在过去。
+    const since = sinceOverride !== null ? sinceOverride : this.state.lastLedgerMessageId;
+    const url = tailOnly
+      ? `${relay.url}/app/history?tail=${Math.min(limit, 500)}`
+      : `${relay.url}/app/history?since=${since}&limit=${limit}`;
     const response = await fetch(
-      `${relay.url}/app/history?since=${since}&limit=${limit}`,
+      url,
       { headers: { Authorization: `Bearer ${relay.secret}` } });
     if (!response.ok) {
       throw new Error(`relay history http ${response.status}`);
@@ -303,7 +317,11 @@ class TideKeeper {
     }
     const deepseekKey = (process.env.DEEPSEEK_API_KEY || "").trim();
     const hhmm = herNow.toISOString().slice(11, 16);
+    const yesterday = new Date(Date.now() + 8 * 3600 * 1000 - 24 * 3600 * 1000)
+      .toISOString().slice(0, 10);
     for (const [day, dayMessages] of byDay) {
+      // 比昨天更早的日子日记已经写过了，草稿无处可用（追账时会大量出现旧日子）
+      if (day < yesterday) continue;
       let transcript = dayMessages.map((m) => `${m.who}：${m.text}`).join("\n");
       if (transcript.length > SUMMARY_MAX_CHARS) {
         transcript = transcript.slice(-SUMMARY_MAX_CHARS);
