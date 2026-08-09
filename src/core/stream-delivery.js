@@ -908,6 +908,14 @@ function classifyReplyItemSourceText(replyText) {
     return null;
   }
   if (candidate !== stripped) {
+    // 2026-08-09 灵兮截到的穿帮：模型把内心 OS 和 {"action":"silent"} 写在同
+    // 一条里（『定位完成…安静等着 {"action":"silent"}』），纯 JSON 判定不中，
+    // 整条连暗号带自言自语发进了聊天。都说要安静了，那前面的话也不是说给她
+    // 听的——整条按 silent 处理。只对 silent 这么干：send_message 混文本时
+    // 宁可原样发也不能替模型改词。
+    if (/\{\s*"action"\s*:\s*"silent"\s*\}/.test(stripped)) {
+      return { kind: "silent" };
+    }
     return null;
   }
   return resolveSystemReplyAction(candidate);
