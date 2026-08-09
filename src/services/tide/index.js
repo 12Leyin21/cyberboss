@@ -271,6 +271,7 @@ class TideKeeper {
       if (!text) continue;
       messages.push({
         id,
+        ts: String(row?.ts || ""),
         who: row?.direction === "in" ? "灵兮" : "沐沐",
         text: text.length > 500 ? `${text.slice(0, 500)}…` : text,
       });
@@ -279,33 +280,52 @@ class TideKeeper {
   }
 
   /** 滚动摘要：已有摘要 + 新对话 → 新摘要。校验非空才算数（残缺的摘要比没有更糟）。 */
-  /** 每潮一段时间线笔记 → ~/.cyberboss/diary-draft-YYYY-MM-DD.md（她的时区计日） */
+  /** 每潮的时间线笔记 → ~/.cyberboss/diary-draft-YYYY-MM-DD.md（她的时区计日）。
+   *
+   * 2026-08-09 灵兮抓到的 bug：潮涨得晚时，一次压缩的窗口横跨好几天，笔记
+   * 全倒进"今天"的草稿，凌晨写日记就把旧事当今天写（8/8 的日记拼了好几天）。
+   * 现在按她时区把消息分到各自的日子——哪天的事进哪天的草稿本。 */
   async appendDiaryDraft(messages) {
     if (!messages.length) return;
-    let transcript = messages.map((m) => `${m.who}：${m.text}`).join("\n");
-    if (transcript.length > SUMMARY_MAX_CHARS) {
-      transcript = transcript.slice(-SUMMARY_MAX_CHARS);
+    const herNow = new Date(Date.now() + 8 * 3600 * 1000);   // 她的时区 +08:00
+    const todayFallback = herNow.toISOString().slice(0, 10);
+    const dayOf = (ts) => {
+      const parsed = Date.parse(ts || "");
+      return Number.isFinite(parsed)
+        ? new Date(parsed + 8 * 3600 * 1000).toISOString().slice(0, 10)
+        : todayFallback;
+    };
+    const byDay = new Map();
+    for (const m of messages) {
+      const day = dayOf(m.ts);
+      if (!byDay.has(day)) byDay.set(day, []);
+      byDay.get(day).push(m);
     }
-    const prompt = [
-      "下面是恋人对话的一个片段（几小时的窗口）。请把它浓缩成 5~10 行的时间线笔记，",
-      "中文，第三人称（灵兮/沐沐）。只记这个窗口里真实发生的事：谁说了什么关键的话、",
-      "做成了什么、情绪在哪里转弯，具体细节（数字、昵称、原话片段）尽量保留。",
-      "不抒情、不评论、不展开。这是给深夜写日记的人当备忘的底稿。直接输出笔记正文。",
-      "",
-      `【对话片段】\n${transcript}`,
-    ].join("\n");
     const deepseekKey = (process.env.DEEPSEEK_API_KEY || "").trim();
-    const note = deepseekKey
-      ? await this.summarizeWithDeepSeek(deepseekKey, prompt)
-      : await this.summarizeWithClaude(prompt);
-    const trimmed = String(note || "").trim();
-    if (trimmed.length < 20) return;
-    const her = new Date(Date.now() + 8 * 3600 * 1000);   // 她的时区 +08:00
-    const day = her.toISOString().slice(0, 10);
-    const hhmm = her.toISOString().slice(11, 16);
-    const draftFile = path.join(path.dirname(this.summaryFile), `diary-draft-${day}.md`);
-    fs.appendFileSync(draftFile, `\n## ${hhmm} 这一潮\n${trimmed}\n`, "utf8");
-    console.log(`[tide] diary draft +1 → ${path.basename(draftFile)}`);
+    const hhmm = herNow.toISOString().slice(11, 16);
+    for (const [day, dayMessages] of byDay) {
+      let transcript = dayMessages.map((m) => `${m.who}：${m.text}`).join("\n");
+      if (transcript.length > SUMMARY_MAX_CHARS) {
+        transcript = transcript.slice(-SUMMARY_MAX_CHARS);
+      }
+      const prompt = [
+        `下面是恋人对话的一个片段，全部发生在 ${day} 这一天。请把它浓缩成 5~10 行的时间线笔记，`,
+        "中文，第三人称（灵兮/沐沐）。只记这个窗口里真实发生的事：谁说了什么关键的话、",
+        "做成了什么、情绪在哪里转弯，具体细节（数字、昵称、原话片段）尽量保留。",
+        "不抒情、不评论、不展开。这是给深夜写日记的人当备忘的底稿。直接输出笔记正文。",
+        "",
+        `【对话片段】\n${transcript}`,
+      ].join("\n");
+      const note = deepseekKey
+        ? await this.summarizeWithDeepSeek(deepseekKey, prompt)
+        : await this.summarizeWithClaude(prompt);
+      const trimmed = String(note || "").trim();
+      if (trimmed.length < 20) continue;
+      const draftFile = path.join(path.dirname(this.summaryFile), `diary-draft-${day}.md`);
+      const late = day !== todayFallback ? `（${hhmm} 补记）` : "";
+      fs.appendFileSync(draftFile, `\n## ${hhmm} 这一潮${late}\n${trimmed}\n`, "utf8");
+      console.log(`[tide] diary draft +1 → ${path.basename(draftFile)}`);
+    }
   }
 
   async rollSummary(previousSummary, messages) {
