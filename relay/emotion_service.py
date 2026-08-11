@@ -15,15 +15,14 @@ from pydantic import BaseModel
 app = FastAPI()
 _model = None
 
-# 环境声那一层默认关着（2026-08-11 装机实测后的决定）。
-# AST 本身没问题——单独跑热推理 2.4 秒。但这台机器只有 3.9G 内存 / 2 核，
-# SenseVoice 一个人就占 2.3G；再塞 350M 的 AST 进来，两边互相把对方挤进
-# swap，每次调用都要把权重从磁盘换回来 → 一条语音多等 19 秒。
-# 那 19 秒比"外面在下雨"贵太多了，所以默认不开。
-# 打开的两条路（任选）：①换更小的模型（YAMNet 只有 3.7M 参数，是 AST 的
-# 1/20，ears 用的就是它）；②把机器加到 8G。
-# 真要临时开：在 .env 里写 AMBIENT_LISTEN=1 然后重启 hearttide-emotion。
-AMBIENT_LISTEN = os.environ.get("AMBIENT_LISTEN", "0") == "1"
+# 环境声那一层（2026-08-11）。曾经默认关着——fp32 的 AST 跟同进程 2.3G 的
+# SenseVoice 一起把这台 3.9G 的机器逼进 swap，一条语音要 19 秒。int8 动态
+# 量化之后 swap 归零、降到 3.2 秒、判读质量没变，所以现在默认开。
+#
+# ⚠️ 这个服务**没有 EnvironmentFile**：往 /opt/cyberboss/.env 里写
+# AMBIENT_LISTEN 是不生效的（装机时踩过，白测了一轮）。要覆盖就改
+# systemd drop-in，仓库里存了一份：deploy/systemd/hearttide-emotion.d-ambient.conf
+AMBIENT_LISTEN = os.environ.get("AMBIENT_LISTEN", "1") == "1"
 
 # SenseVoice 的富文本标签 → 沐沐读得懂的人话（带 emoji，fig 同款气泡样式用）。
 # NEUTRAL/Speech 不值一提，略。

@@ -16,7 +16,11 @@ AudioSet 527 类上训练）跑一遍她的语音条，挑出**跟"她此刻在�
 3. **可选、静默失败**。装不上、加载不了、音频太短，一律返回空列表——
    环境声是锦上添花，绝不能拖垮语音本身。
 
-模型第一次调用时下载（约 350MB）并常驻，之后每条几百毫秒。
+模型第一次调用时下载并常驻，之后每条约 2.2 秒（int8 量化后，见 _load）。
+
+装机实测（2026-08-11，这台 3.9G / 2 核的机器）：
+- fp32：跟同进程 2.3G 的 SenseVoice 一起把机器逼进 swap，每条语音 19 秒
+- int8：swap 归零，每条 3.2 秒（含 SenseVoice 那 1 秒），top5 判读一模一样
 """
 from __future__ import annotations
 
@@ -82,13 +86,26 @@ _pipeline = None
 
 
 def _load():
-    """懒加载。第一次会下模型，之后常驻——这个进程本来就是为模型活着的。"""
+    """懒加载 + int8 动态量化。
+
+    2026-08-11：fp32 的 AST 是 346MB，跟同进程里 2.3G 的 SenseVoice 一起把
+    这台 3.9G 的机器逼进 swap——每条语音的权重都要从磁盘换回来，19 秒。
+    AST 几乎全是 Linear 层（transformer 就这结构），正是动态量化最吃得开的
+    地方：权重降到 int8，**实测 top5 一模一样**，质量没掉。
+
+    量化在这儿比换模型好：不用换来源、不用转换管线、几行代码，而且随时
+    可以把 AMBIENT_QUANTIZE=0 关掉退回 fp32 做对照。
+    """
     global _pipeline
     if _pipeline is None:
+        import os
         import torch
         from transformers import pipeline
-        torch.set_num_threads(2)      # 四核小机器，别把中继饿死
+        torch.set_num_threads(2)      # 两核小机器，别把中继饿死
         _pipeline = pipeline("audio-classification", model=MODEL_ID, top_k=12)
+        if os.environ.get("AMBIENT_QUANTIZE", "1") == "1":
+            _pipeline.model = torch.quantization.quantize_dynamic(
+                _pipeline.model, {torch.nn.Linear}, dtype=torch.qint8).eval()
     return _pipeline
 
 
