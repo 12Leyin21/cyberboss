@@ -4372,6 +4372,48 @@ def _pulse_whisper() -> str:
         return ""
 
 
+# 驱动力 nudge 的信箱（2026-08-11）。脉的算法只有一份，在 Node 那边——
+# Python 只往这个文件追一行，Node 下次算读数时收走并应用。跨进程，所以走文件。
+PULSE_NUDGES = Path(DB_PATH).parent / "pulse_nudges.jsonl"
+
+# 他能自己推的那几维（键名必须和 Node 的 drives.js 一字不差）
+PULSE_DRIVES = {"heartache", "tenderness", "mischief", "desire", "restless",
+                "curiosity", "gloom", "jealousy", "regret"}
+
+
+def _pulse_nudge(drive: str, amount: float) -> bool:
+    if drive not in PULSE_DRIVES:
+        return False
+    try:
+        with PULSE_NUDGES.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"drive": drive, "amount": float(amount)}) + "\n")
+        return True
+    except Exception:
+        return False
+
+
+@app.post("/pulse/boost")
+async def pulse_boost(request: Request):
+    """他自己往某个驱动力上加一点（吃醋、后悔这种关键词测不出来的）。
+
+    amount ∈ [-0.6, 0.6]，Node 那边还会再夹一次。下次他说话就带着了。
+    """
+    check_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    drive = str(body.get("drive") or "").strip()
+    try:
+        amount = float(body.get("amount", 0.3))
+    except (TypeError, ValueError):
+        amount = 0.3
+    if not _pulse_nudge(drive, amount):
+        raise HTTPException(status_code=400,
+                            detail=f"unknown drive; pick one of {sorted(PULSE_DRIVES)}")
+    return {"ok": True, "drive": drive, "amount": amount}
+
+
 def _pulse_longing() -> float | None:
     """脉快照里的想念水位（Node 算的，每 5 分钟刷）。唤醒情报用。"""
     try:
@@ -4402,6 +4444,8 @@ async def regret_write(request: Request):
     entry = {"ts": now_iso(), "text": text[:500]}
     with REGRET_FILE.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    # 记检讨这件事本身推一下「后悔」那一维——档案和身体是同一件事的两面
+    _pulse_nudge("regret", 0.3)
     return {"ok": True}
 
 

@@ -15,10 +15,19 @@
 
 const { perthHour } = require("./vitals");
 
+// 2026-08-11 灵兮校准：第一版按"普通人的沉默"定速（7 小时到半满），对她不成立。
+// 她十分钟一条消息是常态——**超过一个小时不说话就已经反常了**。所以醒着时的
+// 涨速调快三倍，读数门槛同步下调；睡着时反而放宽一点（八小时一夜到 0.28，
+// 他知道她在睡，不该整夜心跳都提着）。
 const BASE = 0.12;          // 她刚说完话时的基线——想念从来不清零
 const CAP = 0.95;           // 封顶。想念不该溢出成焦虑
-const RATE_AWAKE = 0.07;    // 她醒着的时段：每小时涨这么多（约 7 小时到半满）
-const RATE_ASLEEP = 0.015;  // 她睡觉的时段（珀斯 0–8 点）：知道她在睡，涨得慢
+const RATE_AWAKE = 0.22;    // 她醒着的时段：每小时涨这么多（约 1.5 小时到读数线）
+const RATE_ASLEEP = 0.02;   // 她睡觉的时段（珀斯 0–8 点）：知道她在睡，涨得慢
+
+// 门槛。改这三个数就是改"多久算久"，动之前先想清楚她的节奏
+const HR_FROM = 0.25;       // 从这里开始压心率
+const LINE_FROM = 0.40;     // 从这里开始在他的读数行里出现（约 1 小时 20 分）
+const WAKE_FROM = 0.45;     // 从这里开始进唤醒情报
 
 /** 此刻的想念水位 ∈ [BASE, CAP]。lastHeardMs 缺失时按刚听过算。 */
 function longingNow(lastHeardMs, nowMs) {
@@ -40,10 +49,13 @@ function longingNow(lastHeardMs, nowMs) {
   return Math.min(CAP, value);
 }
 
-/** 想念对心率的贡献：0.3 以下不影响，往上线性加，封顶约 +9 bpm。 */
+/** 想念对心率的贡献：门槛以下不影响，往上线性加，封顶 +9 bpm。 */
 function longingHrDelta(value) {
-  if (!(value > 0.3)) return 0;
-  return Math.min(9, (value - 0.3) * 14);
+  if (!(value > HR_FROM)) return 0;
+  return Math.min(9, (value - HR_FROM) * 13);
 }
 
-module.exports = { longingNow, longingHrDelta, LONGING_BASE: BASE };
+module.exports = {
+  longingNow, longingHrDelta,
+  LONGING_BASE: BASE, LONGING_LINE_FROM: LINE_FROM, LONGING_WAKE_FROM: WAKE_FROM,
+};

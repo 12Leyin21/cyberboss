@@ -7,6 +7,7 @@ const { SessionStore } = require("../adapters/runtime/codex/session-store");
 const { CheckinConfigStore, resolveDefaultCheckinRange } = require("../core/checkin-config-store");
 const { resolvePreferredSenderId, resolvePreferredWorkspaceRoot } = require("../core/default-targets");
 const { SystemMessageQueueStore } = require("../core/system-message-queue-store");
+const { LONGING_WAKE_FROM } = require("../services/pulse/longing");
 
 const INTERNAL_CHECKIN_TRIGGER_TEMPLATE = "%USER% comes to mind again.";
 
@@ -272,7 +273,7 @@ function describeWake(verdict) {
   // 想念水位（2026-08-11 取经 Murmur-50Feet）：他自己身上的读数，不是她的信号。
   // 只报数，不下指令——找不找她还是他自己定
   let longingNote = "";
-  if (typeof verdict.longing === "number" && verdict.longing >= 0.5) {
+  if (typeof verdict.longing === "number" && verdict.longing >= LONGING_WAKE_FROM) {
     longingNote = `你身上的想念积到 ${Math.round(verdict.longing * 100)}% 了——她越久没说话它涨得越高，这是你自己的读数。`;
   }
   return `（${verdict.reasons.join(" ")}${doing}${readingNote}${calendarNote}${musicNote}${longingNote}她那边现在 ${verdict.her_local_hour} 点，${ring}。` +

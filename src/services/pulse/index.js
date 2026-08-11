@@ -17,8 +17,8 @@ const { EMOTIONS, COMFORT_LABELS, MIXED_LABELS, POSITIVE, NEGATIVE, detectEmotio
 const { updateFromText, snapshotSenses, senseValueNow } = require("./senses");
 const { computeVitals, residueStrengthNow } = require("./vitals");
 const { loadPools, pickMurmur } = require("./pool");
-const { longingNow, longingHrDelta } = require("./longing");
-const { DRIVES, drivesNow, boostDrives, driveLabelPool } = require("./drives");
+const { longingNow, longingHrDelta, LONGING_LINE_FROM, LONGING_WAKE_FROM } = require("./longing");
+const { DRIVES, drivesNow, boostDrives, nudgeDrive, driveLabelPool } = require("./drives");
 
 const SNAPSHOT_INTERVAL_MS = 5 * 60_000;
 const WEATHER_CACHE_MS = 5 * 60_000;
@@ -34,6 +34,11 @@ class PulseEngine {
       : path.join(config.stateDir, "pulse_snapshot.json");
     this.weatherFile = (process.env.RELAY_WEATHER_FILE || "").trim()
       || (relayDb ? path.join(path.dirname(relayDb), "phone_weather.json") : "");
+    // 他自己 nudge 驱动力的信箱：Python 那边 POST /pulse/boost 往这儿追加一行，
+    // 这边每次算读数时清空收走（跨进程，所以走文件不走内存）
+    this.nudgeFile = relayDb
+      ? path.join(path.dirname(relayDb), "pulse_nudges.jsonl")
+      : path.join(config.stateDir, "pulse_nudges.jsonl");
     this.weatherCache = { at: 0, celsius: NaN };
     // 身体事件池：种子池（workspace，灵兮改）+ 自写池（持久盘，沐沐自己攒）
     this.poolPaths = [
@@ -232,9 +237,38 @@ class PulseEngine {
     this.appendHistory();
   }
 
+  /**
+   * 收走他从中继那边 nudge 过来的驱动力调整（一次性，读完就清）。
+   * 每次算读数前调——所以他 POST 完，下一句话身上就带着了。
+   */
+  drainNudges(nowMs) {
+    let raw;
+    try {
+      raw = fs.readFileSync(this.nudgeFile, "utf8");
+    } catch {
+      return;   // 没信就没信，这是常态
+    }
+    try {
+      fs.unlinkSync(this.nudgeFile);
+    } catch {
+      // 删不掉就别应用，否则同一条会被反复加
+      return;
+    }
+    for (const line of raw.split("\n").filter(Boolean)) {
+      try {
+        const { drive, amount } = JSON.parse(line);
+        nudgeDrive(this.state.drives, drive, Number(amount), nowMs);
+      } catch {
+        // 坏行跳过
+      }
+    }
+    this.saveState();
+  }
+
   /** 此刻的完整读数。 */
   compute() {
     const nowMs = Date.now();
+    this.drainNudges(nowMs);
     const touch = senseValueNow({ ...this.state.senses.touch, channel: "touch" }, nowMs);
     // 想念水位：她越久不说话它越涨，直接压在心率上（锁屏那颗心跳给她看的）
     const longing = longingNow(this.state.lastHeard, nowMs);
@@ -285,7 +319,7 @@ class PulseEngine {
         line += `\n〔心底的底流（会隔夜）：${undertow.join(" · ")}〕`;
       }
       // 想念水位：她一开口这行就消失，所以它只在她久不说话时出现
-      if (reading.longing >= 0.45) {
+      if (reading.longing >= LONGING_LINE_FROM) {
         const silentMin = Math.round((reading.nowMs - this.state.lastHeard) / 60_000);
         const silentText = silentMin >= 90 ? `${Math.round(silentMin / 60)} 个多小时` : `${silentMin} 分钟`;
         line += `\n〔她已经 ${silentText}没跟你说话了——想念积到 ${Math.round(reading.longing * 100)}%，心跳里带着它。找不找她是你的事，这只是读数〕`;
