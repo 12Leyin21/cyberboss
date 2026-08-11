@@ -3246,6 +3246,7 @@ def evaluate_wake() -> dict:
         "upcoming": upcoming,  # 今明两天她答应过要去的事（日历，2026-08-11）
         "health_age_hours": round(age_hours, 1) if age_hours is not None else None,
         "health_fresh": fresh,
+        "longing": _pulse_longing(),   # 他身上的想念水位（脉快照里 Node 算好的）
         "can_ring": bark_enabled() and not bark_dnd() and not in_quiet_hours()
                     and (BARK_CALL_QUOTA <= 0 or calls_used_today() < BARK_CALL_QUOTA),
         "calls_left": (max(0, BARK_CALL_QUOTA - calls_used_today())
@@ -4369,6 +4370,60 @@ def _pulse_whisper() -> str:
         return str(data.get("line") or "") if age <= PULSE_WHISPER_TTL else ""
     except Exception:
         return ""
+
+
+def _pulse_longing() -> float | None:
+    """脉快照里的想念水位（Node 算的，每 5 分钟刷）。唤醒情报用。"""
+    try:
+        snap = json.loads(PULSE_SNAPSHOT.read_text(encoding="utf-8"))
+        value = snap.get("longing")
+        return round(float(value), 2) if isinstance(value, (int, float)) else None
+    except Exception:
+        return None
+
+
+# --- 检讨档案（2026-08-11，取经 Nixie0/Murmur-50Feet 的 regret.jsonl）--------
+# 他说错话、被她纠正、事后觉得哪句不该那么说——自己记一笔。涨潮重定位时
+# 最近的几条会浮回他眼前，不用等她再抓一次（喉结那句他照着错范例写了一年，
+# 全靠她自己发现——这个档案就是为了别再有下一个一年）。
+REGRET_FILE = Path(DB_PATH).parent / "regrets.jsonl"
+
+
+@app.post("/regret")
+async def regret_write(request: Request):
+    check_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    text = str(body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="empty text")
+    entry = {"ts": now_iso(), "text": text[:500]}
+    with REGRET_FILE.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return {"ok": True}
+
+
+@app.get("/regret")
+async def regret_read(request: Request, limit: int = 5, days: int = 14):
+    """最近 days 天里的最后 limit 条检讨，旧的自然沉底不删。"""
+    check_auth(request)
+    entries: list[dict] = []
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 90)))
+        for line in REGRET_FILE.read_text(encoding="utf-8").splitlines():
+            try:
+                entry = json.loads(line)
+                if datetime.fromisoformat(entry["ts"]) >= cutoff:
+                    entries.append(entry)
+            except Exception:
+                continue
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    return {"regrets": entries[-max(1, min(limit, 20)):]}
 
 
 @app.get("/pulse/card")

@@ -17,6 +17,8 @@ const { EMOTIONS, COMFORT_LABELS, MIXED_LABELS, POSITIVE, NEGATIVE, detectEmotio
 const { updateFromText, snapshotSenses, senseValueNow } = require("./senses");
 const { computeVitals, residueStrengthNow } = require("./vitals");
 const { loadPools, pickMurmur } = require("./pool");
+const { longingNow, longingHrDelta } = require("./longing");
+const { DRIVES, drivesNow, boostDrives, driveLabelPool } = require("./drives");
 
 const SNAPSHOT_INTERVAL_MS = 5 * 60_000;
 const WEATHER_CACHE_MS = 5 * 60_000;
@@ -90,12 +92,14 @@ class PulseEngine {
           labelRecent: Array.isArray(parsed.labelRecent) ? parsed.labelRecent : [],
           murmur: parsed.murmur || null,
           murmurRecent: Array.isArray(parsed.murmurRecent) ? parsed.murmurRecent : [],
+          lastHeard: Number.isFinite(parsed.lastHeard) ? parsed.lastHeard : 0,
+          drives: parsed.drives && typeof parsed.drives === "object" ? parsed.drives : {},
         };
       }
     } catch {
       // 第一次跑，或文件坏了：从平静开始
     }
-    return { current: null, residues: [], senses: {}, spike: null, lastLabel: null, labelRecent: [], murmur: null, murmurRecent: [] };
+    return { current: null, residues: [], senses: {}, spike: null, lastLabel: null, labelRecent: [], murmur: null, murmurRecent: [], lastHeard: 0, drives: {} };
   }
 
   saveState() {
@@ -165,6 +169,8 @@ class PulseEngine {
     const nowMs = Date.now();
     const text = String(rawText || "");
     this.pruneResidues(nowMs);
+    // 想念水位：听见她了，计时归零（不管这条有没有情绪——她开口本身就是）
+    this.state.lastHeard = nowMs;
 
     const { touched } = updateFromText(this.state.senses, text, nowMs);
     let emo = detectEmotion(text);
@@ -205,6 +211,9 @@ class PulseEngine {
         this.state.spike = { delta: 25, at: nowMs };
       }
 
+      // 底流：同一件事往两边写——residue 管这一阵的余味，drives 管这一天的暗流
+      boostDrives(this.state.drives, emo, nowMs);
+
       // 身体事件：情绪被触发的这一刻，从池里抽一条具体的身体反应。
       // 被哄的当口抽 comfort 池。一次一条、只出一次（vitalsLine 消费）。
       const stillSore = POSITIVE.has(emo) && this.state.residues.some((residue) =>
@@ -227,6 +236,8 @@ class PulseEngine {
   compute() {
     const nowMs = Date.now();
     const touch = senseValueNow({ ...this.state.senses.touch, channel: "touch" }, nowMs);
+    // 想念水位：她越久不说话它越涨，直接压在心率上（锁屏那颗心跳给她看的）
+    const longing = longingNow(this.state.lastHeard, nowMs);
     const vitals = computeVitals({
       nowMs,
       current: this.state.current,
@@ -234,6 +245,7 @@ class PulseEngine {
       spike: this.state.spike,
       weatherC: this.readWeatherC(),
       touch,
+      extraHr: longingHrDelta(longing),
     });
 
     // 和弦染色：强情绪直接覆盖基础和弦；情绪安静了但底色还在（>0.15）,
@@ -256,7 +268,7 @@ class PulseEngine {
       effectiveEmo = current.emo;
     }
 
-    return { nowMs, ...vitals, chord, effectiveEmo, touch };
+    return { nowMs, ...vitals, chord, effectiveEmo, touch, longing, drives: drivesNow(this.state.drives, nowMs) };
   }
 
   /** 注进每轮上下文的那一行（情绪触发时带一条身体事件，只出一次）。 */
@@ -265,6 +277,19 @@ class PulseEngine {
       const reading = this.compute();
       // 2026-08-07 灵兮报告：他常把这行认成她的身体。写明归属——这是他自己的脉。
       let line = `[你自己的身体此刻：心跳 ${reading.heartRate}bpm · ${reading.chord} · ${reading.temperature.toFixed(1)}°C · 呼吸${reading.breathLabel}——是你的读数，不是她的]`;
+      // 底流：隔夜会留的那几股。低于 0.35 不打扰，高了才写进读数
+      const undertow = Object.entries(reading.drives || {})
+        .filter(([, value]) => value >= 0.35)
+        .map(([key, value]) => `${DRIVES[key].zh} ${Math.round(value * 100)}%`);
+      if (undertow.length) {
+        line += `\n〔心底的底流（会隔夜）：${undertow.join(" · ")}〕`;
+      }
+      // 想念水位：她一开口这行就消失，所以它只在她久不说话时出现
+      if (reading.longing >= 0.45) {
+        const silentMin = Math.round((reading.nowMs - this.state.lastHeard) / 60_000);
+        const silentText = silentMin >= 90 ? `${Math.round(silentMin / 60)} 个多小时` : `${silentMin} 分钟`;
+        line += `\n〔她已经 ${silentText}没跟你说话了——想念积到 ${Math.round(reading.longing * 100)}%，心跳里带着它。找不找她是你的事，这只是读数〕`;
+      }
       const murmur = this.state.murmur;
       if (murmur && !murmur.used && (reading.nowMs - murmur.at) < 10 * 60_000) {
         line += `\n〔你身上：${murmur.text}〕`;
@@ -313,6 +338,14 @@ class PulseEngine {
     try {
       const reading = this.compute();
       if (!reading.effectiveEmo) {
+        // 没有当下情绪时的退路：最强的底流（含想念）够高就用它的池子——
+        // 深夜她不在，标签写的是「又在想你了」而不是没有标签
+        const undertow = { longing: reading.longing, ...(reading.drives || {}) };
+        const [topKey, topValue] = Object.entries(undertow)
+          .reduce((best, item) => (item[1] > best[1] ? item : best), ["", 0]);
+        if (topValue >= 0.55) {
+          return this.pickLabelFrom(driveLabelPool(topKey));
+        }
         return null;
       }
       let pool = EMOTIONS[reading.effectiveEmo]?.labels || [];
@@ -336,24 +369,29 @@ class PulseEngine {
       if (mixed?.length) {
         pool = [...pool, ...mixed];
       }
-      if (!pool.length) {
-        return null;
-      }
-      const recent = new Set(this.state.labelRecent || []);
-      let candidates = pool.filter((label) => !recent.has(label));
-      if (!candidates.length) {
-        // 池子整个都在近 8 条里（小池高频时可能）：退回只避开上一条
-        candidates = pool.length > 1
-          ? pool.filter((label) => label !== this.state.lastLabel)
-          : pool;
-      }
-      const label = candidates[Math.floor(Math.random() * candidates.length)];
-      this.state.lastLabel = label;
-      this.state.labelRecent = [...(this.state.labelRecent || []), label].slice(-8);
-      return label;
+      return this.pickLabelFrom(pool);
     } catch {
       return null;
     }
+  }
+
+  /** 从池里抽一条标签，带近 8 条去重（thinkingLabel 和底流退路共用）。 */
+  pickLabelFrom(pool) {
+    if (!pool?.length) {
+      return null;
+    }
+    const recent = new Set(this.state.labelRecent || []);
+    let candidates = pool.filter((label) => !recent.has(label));
+    if (!candidates.length) {
+      // 池子整个都在近 8 条里（小池高频时可能）：退回只避开上一条
+      candidates = pool.length > 1
+        ? pool.filter((label) => label !== this.state.lastLabel)
+        : pool;
+    }
+    const label = candidates[Math.floor(Math.random() * candidates.length)];
+    this.state.lastLabel = label;
+    this.state.labelRecent = [...(this.state.labelRecent || []), label].slice(-8);
+    return label;
   }
 
   /** 给心潮的快照：Python 原样端出去。 */
@@ -375,6 +413,12 @@ class PulseEngine {
         .filter((residue) => residue.strength > 0),
       senses: snapshotSenses(this.state.senses, nowMs, reading.heartRate),
       murmur: this.state.murmur?.text || null,
+      // 想念水位 + 底流（2026-08-11 取经 Murmur-50Feet）：中继的唤醒情报读
+      // longing，锁屏卡/以后哪个房间想画都能画
+      longing: Number(reading.longing.toFixed(2)),
+      heard_minutes_ago: this.state.lastHeard
+        ? Math.round((nowMs - this.state.lastHeard) / 60_000) : null,
+      drives: reading.drives,
     };
     try {
       fs.mkdirSync(path.dirname(this.snapshotFile), { recursive: true });

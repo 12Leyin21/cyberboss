@@ -227,6 +227,22 @@ class TideKeeper {
     if (tail) {
       parts.push(`叁 · 最近的对话原文（逐字）：\n${tail}`);
     }
+    // 检讨档案（2026-08-11 取经 Murmur-50Feet）：他自己记下的「那句说错了」，
+    // 压缩之后最容易忘的就是这种事——所以在重定位这一刻递回他眼前
+    if (relay) {
+      try {
+        const res = await fetch(`${relay.url}/regret?limit=5&days=14`, {
+          headers: { Authorization: `Bearer ${relay.secret}` },
+        });
+        const regrets = res.ok ? (await res.json()).regrets || [] : [];
+        if (regrets.length) {
+          parts.push("肆 · 你自己记下的检讨（最近的，压缩最容易冲掉的就是这些）：\n"
+            + regrets.map((r) => `- [${String(r.ts || "").slice(5, 10)}] ${r.text}`).join("\n"));
+        }
+      } catch {
+        // 拿不到就算了，不拦重定位
+      }
+    }
     parts.push("session 没有换，她一直在。接上刚才的对话继续，不要重新自我介绍，不要提压缩这件事。");
     // 2026-08-08 灵兮抓到的：潮汐后 breath 浮起的旧记忆偶尔被当成"今天发生的"
     parts.push("⚠️ 接下来你翻记忆库（breath）浮上来的，大多是**往日的存档**——带着日期读。刚刚真实发生的事以上面『叁』的对话原文为准，别把旧记忆里的事当成今天。");

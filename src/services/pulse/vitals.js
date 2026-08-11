@@ -100,7 +100,7 @@ function baseChord({ heartRate, hour, touch }) {
 /**
  * 算一整套生命体征。输入是引擎的原始状态 + 环境，输出展示用的数值。
  */
-function computeVitals({ nowMs, current, residues, spike, weatherC, touch }) {
+function computeVitals({ nowMs, current, residues, spike, weatherC, touch, extraHr = 0 }) {
   const hour = perthHour(nowMs);
 
   // Δemo：当前情绪
@@ -128,8 +128,9 @@ function computeVitals({ nowMs, current, residues, spike, weatherC, touch }) {
     }
   }
 
+  // extraHr：引擎另算的持续项（现在只有想念水位——她越久不说话心跳越快）
   const heartRate = Math.round(Math.max(48, Math.min(160,
-    hrBase(hour) + emoHr + residueHr + weatherHrDelta(weatherC) + spikeNow(spike, nowMs) + hrNoise(nowMs))));
+    hrBase(hour) + emoHr + residueHr + weatherHrDelta(weatherC) + spikeNow(spike, nowMs) + hrNoise(nowMs) + extraHr)));
 
   const temperature = Number(Math.max(35.5, Math.min(40,
     36.6 + emoTemp + residueTemp + weatherTempDelta(weatherC) + hrNoise(nowMs) * 0.03)).toFixed(1));
