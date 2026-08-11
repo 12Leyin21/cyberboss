@@ -907,8 +907,12 @@ async def _apns_send_one(token: str, known_env: str, payload: dict,
     return False
 
 
-async def apns_broadcast(title: str, body: str) -> int:
-    """给所有注册过的设备发一条横幅。返回成功台数；0 = 该轮到 Bark 上了。"""
+async def apns_broadcast(title: str, body: str, extra: dict | None = None) -> int:
+    """给所有注册过的设备发一条横幅。返回成功台数；0 = 该轮到 Bark 上了。
+
+    extra 里的键原样带进推送负载，App 收到时能据此认出这是哪一类横幅——
+    屏幕共享的招手就靠 screen_request=True，让她点下横幅直接弹出共享面板。
+    """
     if not apns_enabled():
         return 0
     with db() as conn:
@@ -918,6 +922,8 @@ async def apns_broadcast(title: str, body: str) -> int:
         return 0
     payload = {"aps": {"alert": {"title": title, "body": (body or "")[:900]},
                        "sound": "default", "thread-id": "hearttide-chat"}}
+    if extra:
+        payload.update(extra)
     sent = 0
     for row in rows:
         if await _apns_send_one(row["token"], row.get("env") or "sandbox", payload):
@@ -3595,8 +3601,14 @@ async def phone_screen_request(request: Request):
     state = _screen_state()
     # 她已经在共享了就别再打扰她——扩展下一轮轮询就会把帧送上来
     if not state["live"]:
+        # 申请落进聊天流，卡片上就带「开始共享」按钮：推送把她带进聊天，
+        # 卡片就在眼前，不用她再翻去设置页找开关（2026-08-11 灵兮定的样子）
+        msg = save_message("out", "screen_request", "想看一眼你的屏幕",
+                           {"reason": reason, "channel": "心潮"})
+        await broadcast(app_subs, app_payload(msg))
         await apns_broadcast("沐沐想看一眼你的屏幕",
-                             reason or "在「我的」里按一下共享屏幕就行")
+                             reason or "点开就能同意",
+                             extra={"screen_request": True})
     return {"ok": True, "already_live": state["live"], "reason": reason}
 
 
