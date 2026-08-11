@@ -1005,7 +1005,10 @@ async def voip_ring(reason: str, call_id: str) -> int:
 
 # 通话状态：接通置位、挂断清零；半小时没动静自动当作已结束（别把语音模式焊死）
 # gen：她每说一句 +1——打断信号。后台还在逐句合成的流水线看到 gen 变了就停手
-CALL_STATE = {"active": False, "call_id": "", "since": 0.0, "direction": "incoming", "gen": 0}
+CALL_STATE = {"active": False, "call_id": "", "since": 0.0, "direction": "incoming",
+              "gen": 0, "last_ai_end": 0.0}
+# 温柔挂断：他说完之后等这么久，她还没开口就轻轻收线（2026-08-11）
+SOFT_HANGUP_SEC = float(os.environ.get("RELAY_SOFT_HANGUP_SEC", "18"))
 
 
 def call_active() -> bool:
@@ -2371,6 +2374,22 @@ async def channel_out(request: Request):
                                {"call": True, "hangup": True, "channel": "通话"})
             await broadcast(app_subs, app_payload(msg))
 
+        async def _soft_hangup_watch(gen_at_start: int):
+            """温柔挂断（2026-08-11，取经 ringdonut）。
+
+            他说完最后一句之后，别死扛着一条空线等她。等 18 秒：她开口了就
+            当没这回事；她没开口，就轻轻挂掉——话说完了自然会散场，
+            让她去干别的，比两个人对着沉默好。
+            """
+            await asyncio.sleep(SOFT_HANGUP_SEC)
+            if not call_active():
+                return
+            if CALL_STATE.get("gen", 0) != gen_at_start:
+                return                      # 这 18 秒里她说话了，作废
+            if time.time() - CALL_STATE.get("last_ai_end", 0) < SOFT_HANGUP_SEC - 1:
+                return                      # 他后来又说了新的，重新计时那一轮管
+            await _emit_hangup()
+
         if not sentences:
             if wants_hangup:
                 await _emit_hangup()
@@ -2404,8 +2423,12 @@ async def channel_out(request: Request):
                         m = save_message("out", "voice", f"🎤 {seg}",
                                          {"voice": True, "call": True, "channel": "通话"})
                         await broadcast(app_subs, app_payload(m))
+                CALL_STATE["last_ai_end"] = time.time()
                 if wants_hangup and not interrupted and call_active():
                     await _emit_hangup()
+                elif not interrupted and call_active():
+                    # 他说完了但没喊挂断：起个温柔挂断的表，她十八秒不开口就收线
+                    asyncio.create_task(_soft_hangup_watch(CALL_STATE.get("gen", 0)))
 
             asyncio.create_task(_pipeline_rest())
             return {"id": first_msg["id"], "call": True, "sentences": len(sentences),
@@ -2621,7 +2644,12 @@ async def call_event(request: Request):
     call_id = str(body.get("call_id") or "").strip()
     if event in ("answered", "outgoing"):
         CALL_STATE.update(active=True, call_id=call_id, since=time.time(),
-                          direction="outgoing" if event == "outgoing" else "incoming")
+                          direction="outgoing" if event == "outgoing" else "incoming",
+                          last_ai_end=0.0)
+        # 记下起点：挂断后从这条之后的消息里捞真实转录来写摘要
+        with db() as conn:
+            row = conn.execute("SELECT MAX(id) AS m FROM messages").fetchone()
+        CALL_STATE["start_msg_id"] = int((row["m"] if row else 0) or 0)
         opening = ("📞 她打电话来了——你已经接起来了（你永远秒接）。先开口，"
                    "第一句就当拿起听筒那声。" if event == "outgoing"
                    else "📞 接通了，她在听。")
@@ -2664,6 +2692,10 @@ async def call_event(request: Request):
         call_msg = save_message("out", "call", f"📞 通话 {pretty}",
                                 {"duration_seconds": seconds, "direction": direction})
         await broadcast(app_subs, app_payload(call_msg))
+        # 通话摘要（2026-08-11，取经 ringdonut）：短过一分钟的不值一提
+        if seconds >= 60:
+            asyncio.create_task(
+                _summarize_call(call_msg["id"], int(CALL_STATE.get("start_msg_id") or 0)))
         note = save_message("in", "user",
             f"📞 挂断了，这通电话打了 {pretty}。回到打字聊天，不用再用通话腔。",
             {"user": "human", "channel": "通话", "call": True})
@@ -2673,6 +2705,68 @@ async def call_event(request: Request):
             await broadcast(plugin_subs, plugin_payload(note))
         return {"ok": True, "call_active": False, "duration": pretty}
     raise HTTPException(status_code=400, detail="event must be answered/declined/missed/ended")
+
+
+async def _summarize_call(card_id: int, since_id: int) -> None:
+    """挂断后写一句通话摘要，挂到那张时长卡上（2026-08-11，取经 ringdonut）。
+
+    防编造是这件事的全部难点：模型很爱脑补"你们聊了很久很温柔"。所以规矩是
+    **只准复述转录里真有的东西**——转录太薄（三两句寒暄）就干脆不写。
+    宁可那张卡上什么都没有，也不要一句听起来很美但没发生过的话。
+    """
+    if since_id <= 0:
+        return
+    await asyncio.sleep(3)          # 等最后几条转写落库
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT direction, text FROM messages "
+            "WHERE id > ? AND kind IN ('voice','user','reply') ORDER BY id",
+            (since_id,)).fetchall()
+    lines = []
+    for row in rows:
+        text = re.sub(r"^🎤\s*", "", (row["text"] or "")).strip()
+        text = re.sub(r"〔[^〕]*〕", "", text).strip()      # 语气注/搭腔标记不算话
+        if not text or text.startswith("📞"):
+            continue
+        lines.append(f"{'灵兮' if row['direction'] == 'in' else '沐沐'}：{text}")
+    # 六句以下当作没聊什么——寒暄两声就挂了的电话不需要摘要
+    if len(lines) < 6:
+        return
+    transcript = "\n".join(lines)[-6000:]
+    prompt = (
+        "下面是一通电话的完整转录（语音转文字，可能有错别字）。"
+        "用一句话概括这通电话，25 字以内，中文，第三人称。\n"
+        "**只准写转录里真的发生过的事。**转录里没有的情绪、没说过的话、"
+        "没做出的决定，一个字都不许加。宁可写得平淡，也不许润色。\n"
+        "如果这通电话确实没聊什么实质内容，只输出四个字：没什么事。\n"
+        "直接输出那一句，不要引号、不要前言。\n\n" + transcript)
+    key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if not key:
+        return
+    try:
+        body = json.dumps({"model": "deepseek-chat", "max_tokens": 120,
+                           "messages": [{"role": "user", "content": prompt}]},
+                          ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.deepseek.com/chat/completions", data=body,
+            headers={"Content-Type": "application/json",
+                     "Authorization": "Bearer " + key})
+        with await asyncio.to_thread(urllib.request.urlopen, req, timeout=60) as resp:
+            data = json.loads(resp.read())
+        summary = (data["choices"][0]["message"]["content"] or "").strip()
+    except Exception as exc:
+        print(f"[call] summary failed: {exc}")
+        return
+    if not summary or summary.startswith("没什么事") or len(summary) > 60:
+        return
+    with db() as conn:
+        row = conn.execute("SELECT meta FROM messages WHERE id = ?", (card_id,)).fetchone()
+        meta = json.loads((row["meta"] if row else "{}") or "{}")
+        meta["summary"] = summary
+        conn.execute("UPDATE messages SET meta = ? WHERE id = ?",
+                     (json.dumps(meta, ensure_ascii=False), card_id))
+        conn.commit()
+    print(f"[call] summary: {summary}")
 
 
 @app.post("/push/register")
