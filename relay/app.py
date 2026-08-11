@@ -3030,6 +3030,29 @@ def evaluate_wake() -> dict:
     except Exception:
         reading = None
 
+    # 日历（2026-08-11）：明天之内有事就当信号——考试、复查、手术这种，
+    # 该在前一晚被想起来，而不是等她自己提。
+    upcoming = None
+    try:
+        cal = read_phone_calendar()
+        soon = []
+        for item in cal.get("events") or []:
+            try:
+                when = datetime.fromisoformat(str(item.get("start")).replace("Z", "+00:00"))
+            except Exception:
+                continue
+            hours = (when - datetime.now(timezone.utc)).total_seconds() / 3600
+            if 0 <= hours <= 30:
+                soon.append((hours, str(item.get("title") or "").strip()))
+        if soon:
+            soon.sort()
+            hours, title = soon[0]
+            when_text = "今天" if hours <= 12 else "明天"
+            upcoming = f"{when_text}她有「{title}」"
+            signals.append(("calendar_soon", upcoming + "。"))
+    except Exception:
+        upcoming = None
+
     # 2026-08-01 第三版。前两版都把"要不要叫醒他"跟"有没有值得说的事"绑在了
     # 一起，做出来比原版那个纯随机 checkin **还严**——原来他每三四十分钟就有
     # 一次机会问她在干嘛，我改完他得先"够格"。灵兮说：
@@ -3074,6 +3097,7 @@ def evaluate_wake() -> dict:
         "night_watch": 0 <= hour < 5,
         "reading": reading,
         "music": music_now,   # 巡查醒来时也顺带知道她在听什么（白天黑夜都给）
+        "upcoming": upcoming,  # 今明两天她答应过要去的事（日历，2026-08-11）
         "health_age_hours": round(age_hours, 1) if age_hours is not None else None,
         "health_fresh": fresh,
         "can_ring": bark_enabled() and not bark_dnd() and not in_quiet_hours()
@@ -4086,6 +4110,37 @@ async def phone_weather(request: Request):
     except Exception:
         pass
     return {"ok": True}
+
+
+CALENDAR_FILE = Path(DB_PATH).parent / "phone_calendar.json"
+
+
+@app.post("/phone/calendar")
+async def phone_calendar_report(request: Request):
+    """心潮把她接下来两周的日程报上来（EventKit，2026-08-11）。
+
+    只存摘要：标题、时间、地点。她的日历不搬家，只让他知道她答应过要去哪儿。
+    """
+    check_auth(request)
+    body = await request.json()
+    events = body.get("events") if isinstance(body.get("events"), list) else []
+    CALENDAR_FILE.write_text(json.dumps(
+        {"events": events[:20], "reported_at": now_iso()},
+        ensure_ascii=False), encoding="utf-8")
+    return {"ok": True, "count": len(events)}
+
+
+def read_phone_calendar() -> dict:
+    try:
+        return json.loads(CALENDAR_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {"events": [], "reported_at": None}
+
+
+@app.get("/phone/calendar")
+async def phone_calendar_read(request: Request):
+    check_auth(request)
+    return read_phone_calendar()
 
 
 @app.get("/phone/weather")
