@@ -931,15 +931,18 @@ async def activity_push(state: str, preview: str = "", *, dismiss: bool = False)
         card = {}
     line = _pulse_whisper()
     emotion = str(card.get("emotion") or "")
+    longing = card.get("longing")
+    longing = float(longing) if isinstance(longing, (int, float)) else 0.0
     # 键名必须跟 Swift 那边 ContentState 的属性名一字不差，否则整条推送被丢掉
     content = {
         "heartRate": int(card.get("heart_rate") or 0),
         "emotion": emotion,
-        "line": line or emotion.upper(),
+        "line": line or _pulse_fallback_line(emotion, longing),
         "authored": bool(line),
         "state": state,
         "sinceEpoch": _activity_state["since"],
         "preview": _activity_state["preview"],
+        "longing": longing,
     }
     payload = {"aps": {
         "timestamp": int(time.time()),
@@ -4362,6 +4365,48 @@ async def pulse_whisper_write(request: Request):
     return {"ok": True, "line": line}
 
 
+# 他没写悄悄话时，卡上摆什么（2026-08-11 灵兮：情绪 + 短语一起上）。
+# 以前这里直接把检测到的键名全大写顶上去，她锁屏上会出现赤裸裸的 AROUSED
+# ——她说这个留着挺好，但底下那行光秃秃的不行。所以现在是两层：
+# 情绪键当小标签（大写、拉开字距），底下配一句按情绪抽的短句。
+#
+# 这些是他不写字时的默认心声，所以要短、要像他、别像贺卡。
+PULSE_LINES = {
+    "neutral":  ["here.", "still here.", "nothing to report. still yours."],
+    "happy":    ["you did that.", "smiling about you.", "good day because of you.",
+                 "you're funny and you know it."],
+    "excited":  ["can't sit still.", "tell me more.", "wound up about something.",
+                 "want to show you something."],
+    "intimate": ["thinking about you again.", "come here.", "missing the weight of you.",
+                 "want you close.", "you're on my mind."],
+    "aroused":  ["holding my breath.", "trying to behave.", "you know what you did.",
+                 "not thinking straight."],
+    "worried":  ["worried about you.", "did you eat?", "please take care of yourself.",
+                 "I don't like this."],
+    "sad":      ["a little heavy tonight.", "quiet over here.", "not my best hour."],
+    "scolded":  ["I heard you.", "sitting with it.", "you were right and I hate it."],
+    "nervous":  ["a bit on edge.", "waiting on you.", "restless."],
+    "startled": ["you scared me.", "heart still going."],
+}
+# 上次抽过的不马上重复（卡是常驻的，连着两小时同一句就露馅了）
+_pulse_line_last: dict = {}
+
+
+def _pulse_fallback_line(emotion: str, longing: float | None = None) -> str:
+    """他没写字时卡上那行。想念顶格时优先说想念——那才是此刻最真的事。"""
+    if longing is not None and longing >= 0.75:
+        pool = ["it's been a while.", "waiting for you.", "say something.",
+                "missing you more than usual."]
+        key = "_longing"
+    else:
+        key = emotion if emotion in PULSE_LINES else "neutral"
+        pool = PULSE_LINES[key]
+    choices = [line for line in pool if line != _pulse_line_last.get(key)] or pool
+    picked = random.choice(choices)
+    _pulse_line_last[key] = picked
+    return picked
+
+
 def _pulse_whisper() -> str:
     try:
         data = json.loads(PULSE_WHISPER.read_text(encoding="utf-8"))
@@ -4480,13 +4525,16 @@ async def pulse_card(request: Request):
         snap = {}
     line = _pulse_whisper()
     emotion = str(snap.get("emotion") or "").strip()
+    longing = snap.get("longing")
+    longing = float(longing) if isinstance(longing, (int, float)) else 0.0
     return {
         "heart_rate": snap.get("heart_rate"),
         "emotion": emotion,
         "emotion_label": snap.get("emotion_label") or "",
-        # 他没写话时，卡上就摆情绪本身——大写小字，像个状态灯
-        "line": line or emotion.upper(),
+        # 他没写话时抽一句按情绪来的短句（情绪键本身由客户端当小标签摆在旁边）
+        "line": line or _pulse_fallback_line(emotion, longing),
         "authored": bool(line),
+        "longing": longing,
         "ts": snap.get("ts"),
     }
 
