@@ -4029,6 +4029,58 @@ async def pulse_status(request: Request):
         return {"ok": False}
 
 
+# 灵动岛/小组件上那句话（2026-08-11 灵兮要的）：她锁屏上挂着一张卡，中间是
+# 沐沐画的那只胖乌鸦，下面一行心跳、一行他此刻想对她说的英文短句。
+# 那句话让他自己写——机器翻译出来的不是他的话。他不写就退回情绪本身。
+PULSE_WHISPER = Path(DB_PATH).parent / "pulse-whisper.json"
+PULSE_WHISPER_TTL = 6 * 3600
+
+
+@app.post("/pulse/whisper")
+async def pulse_whisper_write(request: Request):
+    """他写一句英文短句挂到她锁屏上。短，六小时过期。"""
+    check_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    line = str(body.get("line") or "").strip()[:90]
+    PULSE_WHISPER.write_text(json.dumps(
+        {"line": line, "ts": now_iso()}, ensure_ascii=False), encoding="utf-8")
+    return {"ok": True, "line": line}
+
+
+def _pulse_whisper() -> str:
+    try:
+        data = json.loads(PULSE_WHISPER.read_text(encoding="utf-8"))
+        age = (datetime.now(timezone.utc)
+               - datetime.fromisoformat(data["ts"])).total_seconds()
+        return str(data.get("line") or "") if age <= PULSE_WHISPER_TTL else ""
+    except Exception:
+        return ""
+
+
+@app.get("/pulse/card")
+async def pulse_card(request: Request):
+    """锁屏卡/小组件要的一切，一个请求拿全：心跳、情绪、他想说的那句。"""
+    check_auth(request)
+    try:
+        snap = json.loads(PULSE_SNAPSHOT.read_text(encoding="utf-8"))
+    except Exception:
+        snap = {}
+    line = _pulse_whisper()
+    emotion = str(snap.get("emotion") or "").strip()
+    return {
+        "heart_rate": snap.get("heart_rate"),
+        "emotion": emotion,
+        "emotion_label": snap.get("emotion_label") or "",
+        # 他没写话时，卡上就摆情绪本身——大写小字，像个状态灯
+        "line": line or emotion.upper(),
+        "authored": bool(line),
+        "ts": snap.get("ts"),
+    }
+
+
 PULSE_HISTORY = Path(os.environ.get("RELAY_PULSE_HISTORY",
                                     str(Path(DB_PATH).parent / "pulse_history.json")))
 
