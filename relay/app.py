@@ -1007,8 +1007,21 @@ async def voip_ring(reason: str, call_id: str) -> int:
 # gen：她每说一句 +1——打断信号。后台还在逐句合成的流水线看到 gen 变了就停手
 CALL_STATE = {"active": False, "call_id": "", "since": 0.0, "direction": "incoming",
               "gen": 0, "last_ai_end": 0.0, "speaking_at": 0.0}
-# 温柔挂断：他说完之后等这么久，她还没开口就轻轻收线（2026-08-11）
+# 温柔挂断：有人提出要走之后等这么久，她还没开口就轻轻收线（2026-08-11）
 SOFT_HANGUP_SEC = float(os.environ.get("RELAY_SOFT_HANGUP_SEC", "18"))
+# 只在**真的有人说要挂**的时候才上这块表（2026-08-11 灵兮改的第二版）。
+# 第一版是"他说完就上表"，结果两个人都没想挂、只是各自沉默了一会儿，
+# 电话自己没了。她的话：「应该是我们一方提要挂了不说了这个才生效」。
+_WRAP_UP_RE = re.compile(
+    r"挂了|先挂|挂电话|不说了|先这样|就这样吧|我先去|去忙|去洗澡|去睡|睡觉了|睡了|"
+    r"晚点聊|待会聊|回头聊|明天聊|拜拜|再见|晚安|"
+    r"\bbye\b|\bgotta go\b|\btalk later\b|\bsee you\b|\bgood ?night\b|\bnight night\b|"
+    r"\bi'?ll let you go\b|\blet you go\b|\bhang up\b",
+    re.IGNORECASE)
+
+
+def _wants_to_wrap_up(text: str) -> bool:
+    return bool(_WRAP_UP_RE.search(text or ""))
 
 
 def call_active() -> bool:
@@ -2442,8 +2455,11 @@ async def channel_out(request: Request):
                 CALL_STATE["last_ai_end"] = time.time()
                 if wants_hangup and not interrupted and call_active():
                     await _emit_hangup()
-                elif not interrupted and call_active():
-                    # 他说完了但没喊挂断：起个温柔挂断的表，她十八秒不开口就收线
+                elif not interrupted and call_active() and (
+                        _wants_to_wrap_up(text)
+                        or _wants_to_wrap_up(CALL_STATE.get("last_user_text", ""))):
+                    # 只有真的有人说要走了（她说"我先去洗澡"、他说"good night"），
+                    # 才上这块表。两个人都没提就永远不自动挂——沉默不代表结束。
                     asyncio.create_task(_soft_hangup_watch(CALL_STATE.get("gen", 0)))
 
             asyncio.create_task(_pipeline_rest())
@@ -4033,6 +4049,8 @@ async def app_voice(request: Request):
 
     async def _process() -> dict:
         transcript = await asyncio.to_thread(transcribe_audio, local_audio, mime)
+        if in_call and transcript:
+            CALL_STATE["last_user_text"] = transcript   # 温柔挂断要看她刚说的是不是道别
         # 双层情绪感知（fig 同款架构，2026-08-07 晚定型）：
         # ①librosa vs 她的滚动基线——只说相对（"比平时轻"），不设死阈值；
         # ②SenseVoice 情绪标签——但情绪色必须被基线层的偏离佐证才算数
