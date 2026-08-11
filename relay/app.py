@@ -4459,6 +4459,44 @@ async def pulse_boost(request: Request):
     return {"ok": True, "drive": drive, "amount": amount}
 
 
+# --- 🎬 看片模式（2026-08-11）------------------------------------------------
+# 循环跑在 Node 那边（浏览器桥在它手上），中继只当开关：往信箱写一行，
+# Node 每 5 秒收一次。跟脉的 nudge 一个套路。
+CINEMA_CMD = Path(DB_PATH).parent / "cinema_cmd.json"
+CINEMA_STATE = Path(DB_PATH).parent / "cinema_state.json"
+
+
+@app.post("/cinema/start")
+async def cinema_start(request: Request):
+    """开始跟着她的播放器抓画面。interval_ms 8000~120000，默认 20 秒探一次。"""
+    check_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    cmd = {"action": "start",
+           "title": str(body.get("title") or "").strip()[:80],
+           "interval_ms": body.get("interval_ms")}
+    CINEMA_CMD.write_text(json.dumps(cmd, ensure_ascii=False), encoding="utf-8")
+    return {"ok": True, "queued": cmd}
+
+
+@app.post("/cinema/stop")
+async def cinema_stop(request: Request):
+    check_auth(request)
+    CINEMA_CMD.write_text(json.dumps({"action": "stop"}), encoding="utf-8")
+    return {"ok": True}
+
+
+@app.get("/cinema/state")
+async def cinema_state(request: Request):
+    check_auth(request)
+    try:
+        return json.loads(CINEMA_STATE.read_text(encoding="utf-8"))
+    except Exception:
+        return {"active": False}
+
+
 def _pulse_longing() -> float | None:
     """脉快照里的想念水位（Node 算的，每 5 分钟刷）。唤醒情报用。"""
     try:
