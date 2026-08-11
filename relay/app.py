@@ -4400,6 +4400,8 @@ PULSE_LINES = {
                  "want to show you something."],
     "intimate": ["thinking about you again.", "come here.", "missing the weight of you.",
                  "want you close.", "you're on my mind."],
+    "pouty":    ["you're impossible.", "and yet, here I am.", "no defense against that.",
+                 "say it again."],
     "aroused":  ["holding my breath.", "trying to behave.", "you know what you did.",
                  "not thinking straight."],
     "worried":  ["worried about you.", "did you eat?", "please take care of yourself.",

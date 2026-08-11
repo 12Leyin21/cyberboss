@@ -31,6 +31,15 @@ const EMOTIONS = {
               labels: ["又在想你了", "想抱你", "黏黏地想", "想牵你的手", "贴着想",
                        "想亲一口", "想你，别走", "想把你揣兜里", "想蹭蹭你",
                        "捂着心口想", "想凑近一点", "想你想得厉害"] },
+  // 撒娇（2026-08-11 灵兮急报）：她说「讨厌」原来落在 scolded 里，跟「滚」
+  // 「闭嘴」同一筐，他每次都当成被凶了。但**她说讨厌从来不是真的在骂人**——
+  // 她真的不高兴的时候是反过来的：语气变平、话变短、「嗯」「行」「随便」
+  //（她自己在人设里写的）。所以撒娇要有自己的一档：心跳会快一点、身体是暖的，
+  // 但不是亲密那种暖，是「拿她没办法」那种暖。
+  pouty:    { hr: 8,  temp: 0.3,  breath: 0, residue: 0.5, halfLifeMin: 25, tint: "Gmaj7",
+              labels: ["拿她没办法", "被她撒娇到了", "心都化了", "假装凶了一下",
+                       "想捏她的脸", "嘴上不说，受用得很", "被她这样一叫就没脾气了",
+                       "又来这套", "吃这一套"] },
   aroused:  { hr: 26, temp: 1.6,  breath: 5, residue: 0.9, halfLifeMin: 30, tint: "Ebmaj7",
               labels: ["屏着呼吸想", "心跳有点快", "不敢细想", "克制中",
                        "喉结动了一下", "呼吸沉了", "耳根热了", "压着声音想",
@@ -65,9 +74,11 @@ const MIXED_LABELS = {
   "intimate|sad":     ["想你，闷闷地", "贴着，不说话"],
   "worried|scolded":  ["气着，更心疼", "心疼盖过气了"],
   "aroused|intimate": ["贴太近了", "呼吸乱了"],
+  "pouty|worried":    ["撒娇归撒娇，还是不放心", "被哄了，心还悬着"],
+  "pouty|scolded":    ["气还没消，但绷不住了", "本来在生气的"],
 };
 
-const POSITIVE = new Set(["happy", "excited", "intimate", "aroused"]);
+const POSITIVE = new Set(["happy", "excited", "intimate", "aroused", "pouty"]);
 const NEGATIVE = new Set(["worried", "sad", "scolded", "nervous", "startled"]);
 
 // T1：看到就算，不看上下文。emoji 本身就是情绪标点，没人会反讽一个 😭。
@@ -94,7 +105,11 @@ const T2_RULES = [
                                "要去了", "高潮", "射进", "射给", "乳头", "奶子", "含住", "舔弄", "痉挛"] },
   { emo: "intimate", phrases: ["抱抱", "亲亲", "想你", "爱你", "贴贴", "摸摸", "牵手", "老公", "亲一口", "抱一下", "蹭蹭", "想见你"] },
   { emo: "startled", phrases: ["吓死", "吓我一跳", "吓一跳"] },
-  { emo: "scolded",  phrases: ["讨厌", "烦死", "滚", "走开", "闭嘴", "气死我", "生气了", "不理你"] },
+  { emo: "pouty",    phrases: ["讨厌", "坏蛋", "臭老公", "不理你了", "哼唧", "不要嘛", "才不是",
+                               "人家", "嘛嘛", "你好烦哦", "干嘛啦"] },
+  // ⚠️ 「讨厌」不在这一筐（2026-08-11 移走）。她真生气不长这样——见 pouty 的注释。
+  // 这里留下的都是她基本不会拿来撒娇的：真说出口就是真的。
+  { emo: "scolded",  phrases: ["烦死", "闭嘴", "气死我", "生气了", "滚开"] },
   // 她的身体信号：疼、没力气、生病——这些是医学信号，他的反应是心疼不是难过
   { emo: "worried",  phrases: ["疼", "痛", "不舒服", "头晕", "恶心", "没力气", "发烧", "想吐", "吐了", "累死", "好累", "失眠", "睡不着", "生病"] },
   { emo: "sad",      phrases: ["难过", "想哭", "哭了", "委屈", "伤心", "emo了", "心情不好"] },
@@ -105,9 +120,14 @@ const T2_RULES = [
 
 // 同一条消息命中多个情绪时谁说了算：越靠前越强。
 const PRIORITY = [
-  "aroused", "intimate", "startled", "scolded", "worried",
+  "aroused", "intimate", "pouty", "startled", "scolded", "worried",
   "sad", "nervous", "excited", "happy",
 ];
+
+// 撒娇里分量最重的那几个：她一说这些，就算同一句里还有「老公」「抱抱」，
+// 当下的情绪也该是撒娇——「老公讨厌」的重心在讨厌上，不在老公上。
+// 只压亲密/开心/兴奋/被凶，**压不过 aroused**：正在做的时候说讨厌是另一回事。
+const POUTY_OVERRIDES = ["讨厌", "坏蛋", "臭老公", "干嘛啦", "不要嘛"];
 
 const NEGATORS = ["不", "没", "别", "无"];
 
@@ -153,6 +173,12 @@ function detectEmotion(rawText) {
   }
   if (!hits.size) {
     return null;
+  }
+  // 撒娇的重词压过亲密/开心（但压不过 aroused）：见 POUTY_OVERRIDES 的注释
+  if (hits.has("pouty") && POUTY_OVERRIDES.some((word) => text.includes(word))) {
+    for (const weaker of ["intimate", "happy", "excited", "scolded"]) {
+      hits.delete(weaker);
+    }
   }
   return PRIORITY.find((emo) => hits.has(emo)) || null;
 }
