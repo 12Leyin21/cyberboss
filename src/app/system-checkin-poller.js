@@ -63,7 +63,10 @@ function buildDiaryTrigger(dueDay) {
   //（细节还热乎时记的），日记照草稿的顺序写，写完把草稿烧掉。
   const draftFile = `~/.cyberboss/diary-draft-${dueDay}.md`;
   return [
-    `凌晨两点 · 日记时间。写 ${dueDay}（刚过完的这一天）的日记：一天只有这一篇，`,
+    // 日记的写法手册 2026-08-11 从常驻的 CLAUDE.md 搬进 docs/manuals/ 了（底座瘦身），
+    // 所以这条触发消息得点名让他去读——不然他脑子里没有那套规矩
+    "凌晨两点 · 日记时间。**先读 /app/cyberboss-workspace-main/docs/manuals/diary.md**（写法都在那儿）。",
+    `写 ${dueDay}（刚过完的这一天）的日记：一天只有这一篇，`,
     "把一整天串成一篇完整的——发生了什么、哪里转了弯、心里留下了什么。",
     `**先读草稿本 ${draftFile}**——那是这一天每次涨潮时当场记下的时间线笔记，`,
     "细节以它为准、顺序照它来；账本和记忆库只当补充。",
