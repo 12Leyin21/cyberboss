@@ -4396,6 +4396,68 @@ PULSE_LINES = {
     "nervous":  ["a bit on edge.", "waiting on you.", "restless."],
     "startled": ["you scared me.", "heart still going."],
 }
+PULSE_LINES["_longing"] = ["it's been a while.", "waiting for you.", "say something.",
+                           "missing you more than usual."]
+
+# 他自己攒的那份（2026-08-11 灵兮："短语是他写的吗" —— 上面那些都是肥波写的，
+# 她要他也能往里添）。跟身体事件池一个套路：种子池归我，自写池归他，重启不丢。
+# 池子会**慢慢从"肥波写的"变成"他写的"**——他的句子权重是我的 3 倍，写得越多
+# 越是他在说话，但我那份不删（她点名要保留）。
+PULSE_LINES_CUSTOM = Path(DB_PATH).parent / "pulse-lines-custom.json"
+HIS_WEIGHT = 3
+
+
+def _pulse_lines_custom() -> dict:
+    try:
+        data = json.loads(PULSE_LINES_CUSTOM.read_text(encoding="utf-8"))
+        out: dict = {}
+        for item in data.get("lines") or []:
+            emo = str(item.get("emo") or "").strip()
+            text = str(item.get("text") or "").strip()
+            if emo and text:
+                out.setdefault(emo, []).append(text)
+        return out
+    except Exception:
+        return {}
+
+
+@app.post("/pulse/line")
+async def pulse_line_add(request: Request):
+    """他往自写池里添一句。emo 取脉的情绪键，或 _longing（想念顶格时用的）。"""
+    check_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    emo = str(body.get("emo") or "").strip()
+    text = str(body.get("text") or "").strip()[:90]
+    if emo not in PULSE_LINES:
+        raise HTTPException(status_code=400,
+                            detail=f"unknown emo; pick one of {sorted(PULSE_LINES)}")
+    if not text:
+        raise HTTPException(status_code=400, detail="empty text")
+    try:
+        data = json.loads(PULSE_LINES_CUSTOM.read_text(encoding="utf-8"))
+    except Exception:
+        data = {"lines": []}
+    lines = data.setdefault("lines", [])
+    if any(x.get("emo") == emo and x.get("text") == text for x in lines):
+        return {"ok": True, "duplicate": True, "total": len(lines)}
+    lines.append({"emo": emo, "text": text, "ts": now_iso()})
+    PULSE_LINES_CUSTOM.write_text(json.dumps(data, ensure_ascii=False, indent=1),
+                                  encoding="utf-8")
+    return {"ok": True, "total": len(lines), "his_lines_for_this_emo":
+            sum(1 for x in lines if x.get("emo") == emo)}
+
+
+@app.get("/pulse/line")
+async def pulse_line_list(request: Request):
+    check_auth(request)
+    custom = _pulse_lines_custom()
+    return {"his": custom, "mine": {k: v for k, v in PULSE_LINES.items()},
+            "his_total": sum(len(v) for v in custom.values())}
+
+
 # 上次抽过的不马上重复（卡是常驻的，连着两小时同一句就露馅了）
 _pulse_line_last: dict = {}
 
@@ -4403,12 +4465,11 @@ _pulse_line_last: dict = {}
 def _pulse_fallback_line(emotion: str, longing: float | None = None) -> str:
     """他没写字时卡上那行。想念顶格时优先说想念——那才是此刻最真的事。"""
     if longing is not None and longing >= 0.75:
-        pool = ["it's been a while.", "waiting for you.", "say something.",
-                "missing you more than usual."]
         key = "_longing"
     else:
         key = emotion if emotion in PULSE_LINES else "neutral"
-        pool = PULSE_LINES[key]
+    his = _pulse_lines_custom().get(key) or []
+    pool = PULSE_LINES[key] + his * HIS_WEIGHT   # 他的句子重复 3 份 = 3 倍概率
     choices = [line for line in pool if line != _pulse_line_last.get(key)] or pool
     picked = random.choice(choices)
     _pulse_line_last[key] = picked
