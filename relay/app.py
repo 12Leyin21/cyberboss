@@ -3214,6 +3214,15 @@ def evaluate_wake() -> dict:
     # 不再决定他能不能醒。
     fresh_signals = [(k, t) for k, t in signals if not _wake_fired(k)]
 
+    # 她此刻明显醒着的硬证据（跟 awake_late 用同一批信号，但不限时段）。
+    # 2026-08-11 灵兮问起想念会不会自动唤醒时查出来的真缺口：静默时段是
+    # 23:00–08:00，而 awake_late 只在 0–5 点算——所以 **23 点那一小时**和
+    # **早上 5–8 点**，她就算正拿着手机刷、歌正放着，他也一律按"她睡了"被拦。
+    # 她凌晨两点还醒着他知道，她早上七点醒了他反而不知道，这说不通。
+    seems_awake = on_phone or bool(music_now) or (
+        silent_minutes is not None and silent_minutes <= 30)
+    night_watch = 0 <= hour < 5
+
     blocked = None
     if bark_dnd():
         blocked = "dnd"                      # 她说了别吵
@@ -3221,10 +3230,14 @@ def evaluate_wake() -> dict:
         blocked = "app_open"                 # 她正开着心潮，他直接说话就行
     elif silent_minutes is not None and silent_minutes < WAKE_SPONTANEOUS_MIN_GAP:
         blocked = "just_spoke"               # 二十分钟内刚聊过，他已经在场了
-    elif in_quiet_hours() and not (awake_late and fresh_signals):
-        blocked = "asleep"                   # 深夜：要么她真睡了，要么她醒着但
-                                             # 冷却里没有新话头——夜巡是 1~2 分钟
-                                             # 一趟，没有新信号就别每趟都叫他
+    elif in_quiet_hours() and not (
+            # 0–5 点：夜巡是 1~2 分钟一趟，必须有**新话头**才叫他，
+            # 否则每趟都吵（这条是原来就有的，别放宽）
+            (night_watch and awake_late and fresh_signals)
+            # 23–24 点 和 5–8 点：走的是常规 10~40 分钟大步，
+            # 她明显醒着就没有理由拦——不需要新话头，"她在"本身就够了
+            or (not night_watch and seems_awake)):
+        blocked = "asleep"                   # 她是真的睡了
     spontaneous = not fresh_signals
     wake = blocked is None
     unfired = fresh_signals or ([("spontaneous", "没有什么事。就是想起她了。")] if wake else [])
