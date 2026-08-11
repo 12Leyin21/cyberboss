@@ -5,7 +5,7 @@ const { tryGetPulseEngine } = require("../../../services/pulse");
 
 // Tidal_Echo relay channel: lets the same brain serve the HeartTide phone app
 // alongside WeChat. Enabled only when both env vars are present:
-//   CYBERBOSS_TIDAL_RELAY_URL    e.g. https://tidal-echo-backend.onrender.com
+//   CYBERBOSS_TIDAL_RELAY_URL    e.g. https://207-148-81-76.sslip.io
 //   CYBERBOSS_TIDAL_RELAY_SECRET the relay's RELAY_SECRET
 // Optional: CYBERBOSS_TIDAL_SENDER_ID (default "tidal:lingxi")
 

@@ -23,7 +23,7 @@ access token 30 天、refresh token 365 天且每次用都滚动续期，所以�
     python3 tools/ob_auth.py token     # 打印一个当前可用的 access token
 
 环境变量：
-    OMBRE_URL         记忆库地址，默认 https://ombre-brain-cotj.onrender.com
+    OMBRE_URL         记忆库地址，默认 https://ombre.207-148-81-76.sslip.io
     OMBRE_TOKEN_FILE  令牌存放位置，默认 ~/.ombre-brain/token.json
     OMBRE_AUTH_PORT   本地回调端口，默认 8765
 """
@@ -43,7 +43,7 @@ import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-OB_URL = os.environ.get("OMBRE_URL", "https://ombre-brain-cotj.onrender.com").rstrip("/")
+OB_URL = os.environ.get("OMBRE_URL", "https://ombre.207-148-81-76.sslip.io").rstrip("/")
 TOKEN_FILE = os.path.expanduser(
     os.environ.get("OMBRE_TOKEN_FILE", "~/.ombre-brain/token.json")
 )

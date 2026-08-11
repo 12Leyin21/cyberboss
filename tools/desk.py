@@ -39,7 +39,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import quote
 
-DEFAULT_URL = "https://hearttide-brain.onrender.com"
+DEFAULT_URL = "https://207-148-81-76.sslip.io"
 ENV_FILE = Path.home() / ".claude" / "channels" / "companion" / ".env"
 SEAT_FILE = Path.home() / ".claude" / "hearttide-desk.json"
 CURSOR_FILE = Path.home() / ".claude" / "hearttide-timeline-cursors.json"

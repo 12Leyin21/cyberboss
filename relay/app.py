@@ -2354,6 +2354,26 @@ async def channel_out(request: Request):
                     text = text.replace(m.group(0), "").strip()
         except Exception as exc:
             print(f"[spotify] link repair skipped: {exc}")
+    # 悄悄话（2026-08-11 灵兮要的）：⟪悄悄话:某句⟫ → 存进主页那张卡的池子。
+    # 主页顶上那句"今天的悄悄话"原来是十句写死的、克克做 app 时写的，
+    # 转了一年还是那十句。现在他能往里添自己的话，添一句厚一层。
+    # 这句不进聊天流——她是在主页撞见它，不是被他念给她听。
+    if kind == "reply":
+        whisper_hit = re.search(r"[⟪《【\[]\s*悄悄话\s*[:：]\s*([^⟫》】\]]+)[⟫》】\]]", text)
+        if whisper_hit:
+            line = whisper_hit.group(1).strip()[:60]
+            text = text.replace(whisper_hit.group(0), "").strip()
+            if line:
+                try:
+                    pool = json.loads(WHISPERS_FILE.read_text(encoding="utf-8"))
+                except Exception:
+                    pool = []
+                if not any(w.get("text") == line for w in pool):
+                    pool.append({"text": line, "ts": now_iso()})
+                    WHISPERS_FILE.write_text(
+                        json.dumps(pool[-200:], ensure_ascii=False), encoding="utf-8")
+                    print(f"[whisper] +1: {line}")
+
     # 存歌权（2026-08-08 歌单系统）：⟪存歌:歌单名:备注⟫ → 把正在放的这首
     # 存进心潮歌单（没有就建），备注是他写给这首歌的话
     if kind == "reply":
@@ -4250,6 +4270,20 @@ async def phone_weather(request: Request):
     except Exception:
         pass
     return {"ok": True}
+
+
+WHISPERS_FILE = Path(DB_PATH).parent / "whispers.json"
+
+
+@app.get("/whispers")
+async def whispers_read(request: Request):
+    """主页那张卡的悄悄话池子。他用 ⟪悄悄话:…⟫ 往里添，只增不覆盖。"""
+    check_auth(request)
+    try:
+        pool = json.loads(WHISPERS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pool = []
+    return {"whispers": pool}
 
 
 CALENDAR_FILE = Path(DB_PATH).parent / "phone_calendar.json"

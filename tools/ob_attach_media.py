@@ -28,7 +28,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-OB_URL = os.environ.get("OMBRE_URL", "https://ombre-brain-cotj.onrender.com").rstrip("/")
+OB_URL = os.environ.get("OMBRE_URL", "https://ombre.207-148-81-76.sslip.io").rstrip("/")
 MAX_RAW_BYTES = 3 * 1024 * 1024  # base64 后 ~4MB，贴着 OB 请求上限
 
 _TOKEN_CACHE: list[str] = []
