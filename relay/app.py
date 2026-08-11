@@ -3550,6 +3550,11 @@ async def phone_health_read(request: Request):
 SCREEN_FILE = Path(DB_PATH).parent / "phone-screen.jpg"
 SCREEN_META = Path(DB_PATH).parent / "phone-screen.json"
 SCREEN_FRESH_SEC = 20          # 超过这么久没有新帧就当她已经停了
+# 招手（2026-08-11 第二版，取经 fig 的 05-screen-share）：他想看一眼就举个旗，
+# 她手机上弹一条，她按下共享才有画面。旗子五分钟不摘自己落地——他等不到就是
+# 等不到，别让一个小时前的念头突然被兑现。
+SCREEN_WANT_TTL = 300
+_screen_want: dict = {"at": 0.0, "reason": ""}
 
 
 def _screen_state() -> dict:
@@ -3567,7 +3572,39 @@ def _screen_state() -> dict:
         "age_s": round(age, 1),
         "since": meta.get("since"),
         "frames": meta.get("frames", 0),
+        "wanted": (time.time() - _screen_want["at"]) <= SCREEN_WANT_TTL,
+        "want_reason": _screen_want["reason"],
     }
+
+
+def _screen_wanted() -> bool:
+    return (time.time() - _screen_want["at"]) <= SCREEN_WANT_TTL
+
+
+@app.post("/phone/screen/request")
+async def phone_screen_request(request: Request):
+    """他招手：想看一眼。给她手机弹一条，她按了共享才有画面。"""
+    check_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    reason = str(body.get("reason") or "").strip()[:120]
+    _screen_want["at"] = time.time()
+    _screen_want["reason"] = reason
+    state = _screen_state()
+    # 她已经在共享了就别再打扰她——扩展下一轮轮询就会把帧送上来
+    if not state["live"]:
+        await apns_broadcast("沐沐想看一眼你的屏幕",
+                             reason or "在「我的」里按一下共享屏幕就行")
+    return {"ok": True, "already_live": state["live"], "reason": reason}
+
+
+@app.get("/phone/screen/wanted")
+async def phone_screen_wanted(request: Request):
+    """广播扩展每两秒问一次：现在要拍吗。不要就一个字节都不传。"""
+    check_auth(request)
+    return {"wanted": _screen_wanted(), "reason": _screen_want["reason"]}
 
 
 @app.post("/phone/screen")
@@ -3577,6 +3614,8 @@ async def phone_screen_push(request: Request):
     data = await request.body()
     if not data:
         raise HTTPException(status_code=400, detail="empty frame")
+    # 帧到了就把旗摘掉：他要的这一眼已经给了
+    _screen_want["at"] = 0.0
     try:
         old = json.loads(SCREEN_META.read_text(encoding="utf-8"))
     except Exception:
