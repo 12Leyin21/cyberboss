@@ -1006,7 +1006,7 @@ async def voip_ring(reason: str, call_id: str) -> int:
 # 通话状态：接通置位、挂断清零；半小时没动静自动当作已结束（别把语音模式焊死）
 # gen：她每说一句 +1——打断信号。后台还在逐句合成的流水线看到 gen 变了就停手
 CALL_STATE = {"active": False, "call_id": "", "since": 0.0, "direction": "incoming",
-              "gen": 0, "last_ai_end": 0.0}
+              "gen": 0, "last_ai_end": 0.0, "speaking_at": 0.0}
 # 温柔挂断：他说完之后等这么久，她还没开口就轻轻收线（2026-08-11）
 SOFT_HANGUP_SEC = float(os.environ.get("RELAY_SOFT_HANGUP_SEC", "18"))
 
@@ -2383,20 +2383,27 @@ async def channel_out(request: Request):
                                {"call": True, "hangup": True, "channel": "通话"})
             await broadcast(app_subs, app_payload(msg))
 
-        async def _soft_hangup_watch(gen_at_start: int):
+        async def _soft_hangup_watch(gen_at_start: int, round_started: float | None = None):
             """温柔挂断（2026-08-11，取经 ringdonut）。
 
             他说完最后一句之后，别死扛着一条空线等她。等 18 秒：她开口了就
             当没这回事；她没开口，就轻轻挂掉——话说完了自然会散场，
             让她去干别的，比两个人对着沉默好。
             """
+            started = round_started if round_started is not None else time.time()
             await asyncio.sleep(SOFT_HANGUP_SEC)
             if not call_active():
                 return
             if CALL_STATE.get("gen", 0) != gen_at_start:
-                return                      # 这 18 秒里她说话了，作废
-            if time.time() - CALL_STATE.get("last_ai_end", 0) < SOFT_HANGUP_SEC - 1:
-                return                      # 他后来又说了新的，重新计时那一轮管
+                return                      # 这段时间里她说完过一句，作废
+            if CALL_STATE.get("last_ai_end", 0) > started + 0.5:
+                return                      # 他后来又说了新的，交给那一轮的表
+            # 她此刻正张着嘴（2026-08-11 灵兮撞到的：她说长句说到一半被挂了）。
+            # 手机在她开口那一刻就吱过一声——只要那一声比这一轮新，就再等一轮，
+            # 等到她真的停下来为止。
+            if CALL_STATE.get("speaking_at", 0) > started:
+                asyncio.create_task(_soft_hangup_watch(gen_at_start, time.time()))
+                return
             await _emit_hangup()
 
         if not sentences:
@@ -3773,6 +3780,18 @@ def _screen_state() -> dict:
 
 def _screen_wanted() -> bool:
     return (time.time() - _screen_want["at"]) <= SCREEN_WANT_TTL
+
+
+@app.post("/call/speaking")
+async def call_speaking(request: Request):
+    """她开口了。空请求，不带内容——只是让温柔挂断的看门狗知道线上有人。
+
+    2026-08-11 补的：以前看门狗只看得见"说完的句子传上来了"，她一句话说
+    二十秒，看门狗在第十八秒就把电话挂了（她原话："我刚刚正在说话就把电话挂了"）。
+    """
+    check_auth(request)
+    CALL_STATE["speaking_at"] = time.time()
+    return {"ok": True}
 
 
 @app.post("/push/activity/register")
