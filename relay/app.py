@@ -907,6 +907,54 @@ async def _apns_send_one(token: str, known_env: str, payload: dict,
     return False
 
 
+# --- 常驻卡的远程更新（2026-08-11，取经 fig 的状态卡）----------------------
+# 她锁屏上那只乌鸦不是静态的：她说完话卡片翻成「他在想…」+ 秒表，他回完翻成
+# 「他回你了」+ 那句话的开头。靠 ActivityKit 推送做到——付费账号才有的正门，
+# 不需要她打开 app。
+ACTIVITY_TOPIC = f"{APNS_BUNDLE_ID}.push-type.liveactivity"
+_activity_state: dict = {"state": "idle", "since": 0.0, "preview": ""}
+
+
+async def activity_push(state: str, preview: str = "", *, dismiss: bool = False) -> int:
+    """把卡片翻到某个状态。state: idle / thinking / replied。"""
+    if not apns_enabled():
+        return 0
+    with db() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT token, env FROM push_tokens WHERE platform = 'ios-liveactivity'").fetchall()]
+    if not rows:
+        return 0
+    _activity_state.update({"state": state, "since": time.time(), "preview": preview[:60]})
+    try:
+        card = json.loads(PULSE_SNAPSHOT.read_text(encoding="utf-8"))
+    except Exception:
+        card = {}
+    line = _pulse_whisper()
+    emotion = str(card.get("emotion") or "")
+    # 键名必须跟 Swift 那边 ContentState 的属性名一字不差，否则整条推送被丢掉
+    content = {
+        "heartRate": int(card.get("heart_rate") or 0),
+        "emotion": emotion,
+        "line": line or emotion.upper(),
+        "authored": bool(line),
+        "state": state,
+        "sinceEpoch": _activity_state["since"],
+        "preview": _activity_state["preview"],
+    }
+    payload = {"aps": {
+        "timestamp": int(time.time()),
+        "event": "end" if dismiss else "update",
+        "content-state": content,
+        "stale-date": int(time.time()) + 1800,
+    }}
+    sent = 0
+    for row in rows:
+        if await _apns_send_one(row["token"], row.get("env") or "sandbox", payload,
+                                push_type="liveactivity", topic=ACTIVITY_TOPIC):
+            sent += 1
+    return sent
+
+
 async def apns_broadcast(title: str, body: str, extra: dict | None = None) -> int:
     """给所有注册过的设备发一条横幅。返回成功台数；0 = 该轮到 Bark 上了。
 
@@ -2374,8 +2422,19 @@ async def channel_out(request: Request):
     # only push real replies, not 'thinking' chatter.
     if kind == "reply":
         await notify_all(msg)  # 永远推；前台横幅由客户端按掉。push 失败不许影响落库
+        # 锁屏那只乌鸦翻到「他回你了」+ 这句话的开头，两分钟后自己退回平常
+        asyncio.create_task(_activity_replied(text))
 
     return {"id": msg["id"]}
+
+
+async def _activity_replied(text: str) -> None:
+    preview = re.sub(r"\s+", " ", (text or "")).strip()[:40]
+    await activity_push("replied", preview)
+    await asyncio.sleep(120)
+    # 这两分钟里她要是又说话了，卡片已经翻到别的状态——别把它按回去
+    if _activity_state["state"] == "replied":
+        await activity_push("idle")
 
 
 # ---- human side ------------------------------------------------------------
@@ -2421,6 +2480,8 @@ async def app_send(request: Request):
     await broadcast(app_subs, app_payload(msg))
     # the AI starts processing — push a typing state to the PWA
     await broadcast(app_subs, {"type": "typing", "active": True})
+    # 锁屏那只乌鸦跟着翻页：她刚说完话 → 「他在想…」，秒表开始走
+    asyncio.create_task(activity_push("thinking"))
     return {"id": msg["id"]}
 
 
@@ -3585,6 +3646,27 @@ def _screen_state() -> dict:
 
 def _screen_wanted() -> bool:
     return (time.time() - _screen_want["at"]) <= SCREEN_WANT_TTL
+
+
+@app.post("/push/activity/register")
+async def push_activity_register(request: Request):
+    """App 开卡时把这张活动的推送令牌交上来。一次只留一张卡，旧的直接换掉。
+
+    ⚠️ 这个端点必须待在 `app = FastAPI(...)` 之后——装饰器是导入时执行的，
+    放前面整个中继起不来（2026-08-11 亲测，服务趴了两分钟）。
+    """
+    check_auth(request)
+    body = await request.json()
+    token = str(body.get("token") or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="token required")
+    with db() as conn:
+        conn.execute("DELETE FROM push_tokens WHERE platform = 'ios-liveactivity'")
+        conn.execute(
+            "INSERT OR REPLACE INTO push_tokens (token, platform, env, created) VALUES (?,?,?,?)",
+            (token, "ios-liveactivity", "sandbox", now_iso()))
+        conn.commit()
+    return {"ok": True}
 
 
 @app.post("/phone/screen/request")
