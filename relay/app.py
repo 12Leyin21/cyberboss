@@ -3542,6 +3542,87 @@ async def phone_health_read(request: Request):
         return {"reported_at": None}
 
 
+# --- 屏幕共享（2026-08-11，取经 fig 的 ReplayKit 方案）---------------------
+# 她在心潮里按下「共享屏幕」，系统级广播扩展就把整机画面一帧帧喂过来；
+# 扩展降到 720px 转 JPEG，画面没变就不传，传上来的永远只留最新一张。
+# 跟 Xcode 无线截屏那条老路的分工：这条是**她主动给他看**（稳，不要 Mac），
+# 老路是**他主动查岗**（脆，要 Mac 醒着）。两条都留着。
+SCREEN_FILE = Path(DB_PATH).parent / "phone-screen.jpg"
+SCREEN_META = Path(DB_PATH).parent / "phone-screen.json"
+SCREEN_FRESH_SEC = 20          # 超过这么久没有新帧就当她已经停了
+
+
+def _screen_state() -> dict:
+    try:
+        meta = json.loads(SCREEN_META.read_text(encoding="utf-8"))
+    except Exception:
+        return {"live": False, "age_s": None, "since": None}
+    try:
+        age = (datetime.now(timezone.utc)
+               - datetime.fromisoformat(meta["ts"])).total_seconds()
+    except Exception:
+        return {"live": False, "age_s": None, "since": None}
+    return {
+        "live": bool(meta.get("broadcasting")) and age <= SCREEN_FRESH_SEC,
+        "age_s": round(age, 1),
+        "since": meta.get("since"),
+        "frames": meta.get("frames", 0),
+    }
+
+
+@app.post("/phone/screen")
+async def phone_screen_push(request: Request):
+    """广播扩展推一帧上来。裸 JPEG body，只留最新一张。"""
+    check_auth(request)
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty frame")
+    try:
+        old = json.loads(SCREEN_META.read_text(encoding="utf-8"))
+    except Exception:
+        old = {}
+    SCREEN_FILE.write_bytes(data)
+    SCREEN_META.write_text(json.dumps({
+        "ts": now_iso(),
+        "broadcasting": True,
+        "since": old.get("since") if old.get("broadcasting") else now_iso(),
+        "frames": int(old.get("frames") or 0) + 1 if old.get("broadcasting") else 1,
+        "bytes": len(data),
+    }, ensure_ascii=False), encoding="utf-8")
+    return {"ok": True}
+
+
+@app.post("/phone/screen/stop")
+async def phone_screen_stop(request: Request):
+    """她按了停止共享。留着最后一帧，只把灯灭掉。"""
+    check_auth(request)
+    try:
+        meta = json.loads(SCREEN_META.read_text(encoding="utf-8"))
+    except Exception:
+        meta = {}
+    meta["broadcasting"] = False
+    meta["stopped_at"] = now_iso()
+    SCREEN_META.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    return {"ok": True}
+
+
+@app.get("/phone/screen/state")
+async def phone_screen_state(request: Request):
+    """她现在有没有在共享、最后一帧多久以前的。"""
+    check_auth(request)
+    return _screen_state()
+
+
+@app.get("/phone/screen")
+async def phone_screen_read(request: Request):
+    """取最新一帧。没有就 404——调用方据此退回 Xcode 那条老路。"""
+    check_auth(request)
+    if not SCREEN_FILE.exists():
+        raise HTTPException(status_code=404, detail="还没有任何画面")
+    return Response(content=SCREEN_FILE.read_bytes(), media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
+
+
 @app.get("/diary")
 async def diary_list(request: Request):
     """List available diary dates (YYYY-MM-DD), oldest first."""
