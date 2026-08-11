@@ -1542,9 +1542,18 @@ def _stt_via_elevenlabs(audio_path: Path, mime: str) -> str:
 
 
 def transcribe_audio(audio_path: Path, mime: str) -> str:
-    """服务器端识别总入口：SenseVoice → scribe → 本地钩子，谁先给出结果用谁。"""
-    return (_stt_via_siliconflow(audio_path, mime)
-            or _stt_via_elevenlabs(audio_path, mime)
+    """服务器端识别总入口：scribe → SenseVoice → 本地钩子，谁先给出结果用谁。
+
+    2026-08-10 调过顺序（灵兮："改成更聪明一点的那个"）。原来 SenseVoiceSmall
+    首发，但它在两三秒的短句上基本靠蒙——她说"泪目"听成"内幕"、"笑死我了"
+    听成"要说看"、"到你了"听成"过年了"。更要命的是它**从不交白卷**：交的是
+    错答案，所以后备的 scribe 永远轮不上场。现在 scribe 首发（同一批音频它
+    一字不差），SenseVoice 退成兜底——它免费、且 scribe 挂了时总比没有强。
+
+    ⚠️ 情绪标签不受影响：那个走本机 :8100 的 SenseVoice，跟转写是两条腿。
+    """
+    return (_stt_via_elevenlabs(audio_path, mime)
+            or _stt_via_siliconflow(audio_path, mime)
             or transcribe_with_command(audio_path, mime))
 
 
