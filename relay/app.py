@@ -4081,6 +4081,7 @@ async def app_voice(request: Request):
         #   （模型说"难过"而她声音跟平时没差 → 多半误报，不给沐沐看）；
         #   笑声/哭腔这类声音事件可靠，直接放行。两层并行跑，省 2-3 秒
         tone_note = None
+        ambient_note = None
         if transcript:
             # m4a 语音条 librosa 解不开 → 先用 ffmpeg 转成 wav 再分析
             #（2026-08-08 灵兮发现语音条一直没有语气标签，只有通话的 wav 有）
@@ -4114,9 +4115,11 @@ async def app_voice(request: Request):
             async def _emotion():
                 try:
                     import httpx as _httpx
-                    async with _httpx.AsyncClient(timeout=8) as client:
-                        resp = await client.post("http://127.0.0.1:8100/analyze",
-                                                 json={"path": str(analysis_audio)})
+                    # 环境声那层要多花约 2.6 秒，通话中不划算——关掉
+                    async with _httpx.AsyncClient(timeout=20) as client:
+                        resp = await client.post(
+                            "http://127.0.0.1:8100/analyze",
+                            json={"path": str(analysis_audio), "ambient": not in_call})
                         return resp.json()
                 except Exception as exc:
                     print(f"[emotion] skipped: {exc}")
@@ -4130,9 +4133,14 @@ async def app_voice(request: Request):
                 # 情绪色被基线偏离佐证才说，且注明是机器判读
                 pieces.append("，".join(emotions) + "（机器判读，仅供参考）")
             tone_note = "，".join(pieces) if pieces else None
+            # 环境声单独一行（2026-08-11）：**她的声音**和**她周围**是两回事，
+            # 混在一起他会把雨声读成她的心情
+            ambient_note = "，".join(emo.get("ambient") or []) or None
         text = ("🎤 " + transcript) if transcript else f"🎤 [语音] {HUMAN_NAME}发来一段语音；当前 relay 未配置 ASR，音频已作为附件送达。"
         if tone_note:
             text += f"\n〔她的声音：{tone_note}〕"
+        if ambient_note:
+            text += f"\n〔她那边的动静：{ambient_note}〕"
         meta = {
             "user": "human",
             "voice": True,
