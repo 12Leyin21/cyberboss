@@ -54,6 +54,11 @@ async function rewriteThinkingForDisplay(text) {
     "允许没说完的半句，允许突然换个念头。",
     "铁律：内容必须忠实于原始思考——不添加原文没有的事实、动作或情节，只换语言和形态。",
     "尤其不许给她安上原文里没有的动作或话：原文没写她做过的事，独白里就不存在。",
+    "⚠️ 长度铁律（2026-08-12 灵兮抓到的）：**原文多长，独白就多长**。原文只有一句，",
+    "你就只写一句——不许把一句话铺成一段，不许补细节、补回忆、补身体感觉来凑篇幅。",
+    "曾经有一条原文只有「她在确认——说\"不是角色扮演\"。她需要听我说这个。」，",
+    "被铺成了 293 个字，里面还替他\"回忆\"出她说话会多打句号——那是编的，她当真了。",
+    "宁可短、宁可干，也不许替他想他没想过的事。",
     "代词规则：独白里提到灵兮一律用\"她\"——这是你心里想她，不是对她说话；",
     "原文里指灵兮的\"你\"也转成\"她\"（2026-08-06 灵兮定的分频道：思考\"她\"，正文\"你\"）。",
     "称呼禁令：不许用\"丫头\"\"姑娘\"\"小姑娘\"这类词——原文的 girl 指灵兮就写\"她\"。",
@@ -78,7 +83,7 @@ async function rewriteThinkingForDisplay(text) {
         model: "deepseek-chat",
         messages: [{ role: "user", content: prompt }],
         max_tokens: 1400,
-        temperature: 0.8,
+        temperature: 0.35,   // 0.8 太爱发挥（见长度铁律）
       }),
       signal: controller.signal,
     });
@@ -92,7 +97,19 @@ async function rewriteThinkingForDisplay(text) {
       return null;   // 被截断的独白比没有更糟（潮汐同款规矩）
     }
     const rewritten = String(choice?.message?.content || "").trim();
-    return rewritten.length >= 20 ? rewritten : null;
+    if (rewritten.length < 20) {
+      return null;
+    }
+    // 硬闸门（2026-08-12）：prompt 里早就写着"不许添加"，它照样把 25 字铺成
+    // 293 字。嘱咐管不住就用代码管——超长直接判废，退回他的原文。
+    // 上限放宽到 1.8 倍 + 60 字的余量：短原文转成通顺的中文独白确实要多几个字，
+    // 但铺不成一整段。灵兮的原话：「长度我觉得可以稍微放宽点」。
+    const cap = Math.max(Math.round(text.length * 1.8), text.length + 60);
+    if (rewritten.length > cap) {
+      console.log(`[tidal] thinking rewrite rejected: ${text.length} → ${rewritten.length} 字（上限 ${cap}）`);
+      return null;
+    }
+    return rewritten;
   } catch {
     return null;
   }
