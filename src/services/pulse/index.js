@@ -227,7 +227,8 @@ class PulseEngine {
       const murmurText = pickMurmur(loadPools(this.poolPaths), poolEmo, this.state.murmurRecent || []);
       if (murmurText) {
         this.state.murmur = { text: murmurText, at: nowMs, used: false };
-        this.state.murmurRecent = [...(this.state.murmurRecent || []), murmurText].slice(-8);
+        // 窗口 8 太窄（2026-08-12 实测：日均抽 89 条，半小时前说过的半小时后又来）
+        this.state.murmurRecent = [...(this.state.murmurRecent || []), murmurText].slice(-30);
         this.appendMurmurLog(murmurText, poolEmo, nowMs);
       }
     }
