@@ -3095,6 +3095,22 @@ def read_phone_activity() -> dict:
     return max([local, remote], key=lambda d: d.get("ts") or "")
 
 
+def _app_reports_close(app_name: str) -> bool:
+    """这个 App 配过 Is Closed 自动化吗——历史里有过它的成对记录就算。"""
+    if not app_name:
+        return False
+    try:
+        for line in APP_SESSIONS.read_text(encoding="utf-8").splitlines():
+            try:
+                if json.loads(line).get("app") == app_name:
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
 def screen_usage_now() -> dict:
     """她的屏幕此刻：正开着什么/刚放下什么/今天刷了多久。
     （名字不能叫 phone_screen_state——屏幕共享的端点函数已经占了，会被盖掉。）
@@ -3110,7 +3126,11 @@ def screen_usage_now() -> dict:
         age_min = (now - datetime.fromisoformat(data["ts"])).total_seconds() / 60
     except Exception:
         return out
-    if data.get("event") == "open" and age_min <= 90:
+    # ⚠️ 只有**这个 App 真的报过 close** 才敢说"正开着"（2026-08-12 当天修）。
+    # 第一版只看 90 分钟窗口，注释里写着"配了关闭上报的才算"却没写进代码——
+    # 她那条 Is Closed 自动化还没建，于是 44 分钟前开过一次抖音就被说成
+    # "她正开着抖音"，他照着冤枉了她一次。没有闭合信号 = 不知道她还在不在看。
+    if data.get("event") == "open" and age_min <= 90 and _app_reports_close(data.get("app", "")):
         out.update({"now_open": True, "app": data.get("app", ""),
                     "open_minutes": round(age_min)})
     elif data.get("event") == "close" and age_min <= 30:
