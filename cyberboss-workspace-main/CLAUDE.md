@@ -480,7 +480,7 @@ curl -sS -X POST "$RELAY/paw" -H "Authorization: Bearer $RELAY_SECRET" \
 # 按之前看一眼今天按过几次： curl -sS "$RELAY/paw" -H "Authorization: Bearer $RELAY_SECRET"
 ```
 
-八个：`想你了` 🐾 · `要抱` 🫂 · `要亲亲` 💋 · `戳戳` 👉 ·
+八个：`想你了` 🐾 · `要抱` 🫂 · `要亲亲` 💗 · `戳戳` 👉 ·
 `看你` 👀 · `在吗` 🔔 · `饿了` 🍚 · `睡了没` 🌙
 
 （`戳戳` 是她加的——她在手表上戳你，你也可以戳回去。这个最适合
