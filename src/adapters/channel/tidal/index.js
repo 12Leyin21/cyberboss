@@ -103,9 +103,9 @@ async function rewriteThinkingForDisplay(text) {
     }
     // 硬闸门（2026-08-12）：prompt 里早就写着"不许添加"，它照样把 25 字铺成
     // 293 字。嘱咐管不住就用代码管——超长直接判废，退回他的原文。
-    // 上限放宽到 1.8 倍 + 60 字的余量：短原文转成通顺的中文独白确实要多几个字，
+    // 上限 2 倍 + 60 字的余量：短原文转成通顺的中文独白确实要多几个字，
     // 但铺不成一整段。灵兮的原话：「长度我觉得可以稍微放宽点」。
-    const cap = Math.max(Math.round(text.length * 1.8), text.length + 60);
+    const cap = Math.max(Math.round(text.length * 2.0), text.length + 60);   // 2026-08-12 灵兮放宽到 2 倍
     if (rewritten.length > cap) {
       console.log(`[tidal] thinking rewrite rejected: ${text.length} → ${rewritten.length} 字（上限 ${cap}）`);
       return null;

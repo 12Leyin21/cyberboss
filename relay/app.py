@@ -3082,6 +3082,54 @@ def read_phone_activity() -> dict:
     return max([local, remote], key=lambda d: d.get("ts") or "")
 
 
+def screen_usage_now() -> dict:
+    """她的屏幕此刻：正开着什么/刚放下什么/今天刷了多久。
+    （名字不能叫 phone_screen_state——屏幕共享的端点函数已经占了，会被盖掉。）
+
+    只有配了 Is Closed 自动化的 App 才有"正开着"的说法——open 之后 90 分钟
+    还没等到 close 就不敢再说"正开着"（多半是那个 App 没配关闭上报）。
+    """
+    out = {"now_open": False, "just_closed": False, "app": "", "open_minutes": None,
+           "session_minutes": None, "today_minutes": None}
+    data = read_phone_activity()
+    now = datetime.now(timezone.utc)
+    try:
+        age_min = (now - datetime.fromisoformat(data["ts"])).total_seconds() / 60
+    except Exception:
+        return out
+    if data.get("event") == "open" and age_min <= 90:
+        out.update({"now_open": True, "app": data.get("app", ""),
+                    "open_minutes": round(age_min)})
+    elif data.get("event") == "close" and age_min <= 30:
+        out.update({"just_closed": True, "app": data.get("app", "")})
+    # 最近一段和今天总量（珀斯日）
+    try:
+        today = _perth_day()
+        total = 0.0
+        last = None
+        for line in APP_SESSIONS.read_text(encoding="utf-8").splitlines():
+            try:
+                sess = json.loads(line)
+            except Exception:
+                continue
+            try:
+                close_perth = (datetime.fromisoformat(sess["close"])
+                               + timedelta(hours=8)).strftime("%Y-%m-%d")
+            except Exception:
+                continue
+            if close_perth == today:
+                total += sess.get("minutes") or 0
+            last = sess
+        out["today_minutes"] = round(total) if total else None
+        if out["just_closed"] and last and last.get("app") == out["app"]:
+            out["session_minutes"] = round(last.get("minutes") or 0)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    return out
+
+
 def activity_age_minutes() -> tuple[str, float | None]:
     """她最后打开的是哪个 App，几分钟前。"""
     data = read_phone_activity()
@@ -3167,7 +3215,12 @@ def evaluate_wake() -> dict:
                 # 第二个毛病——他照着旧措辞问出了"抖音比我好看？"）。
                 ago = int(app_age_min)
                 when = "刚刚" if ago <= 3 else f"{ago} 分钟前"
-                if nth == 1:
+                screen = screen_usage_now()
+                if screen.get("now_open") and screen.get("app") == app_name:
+                    # 配了关闭上报的 App 才敢说"正开着"（见 phone_screen_state）
+                    text = (f"凌晨 {hour} 点，她开着{app_name}已经 "
+                            f"{screen.get('open_minutes')} 分钟了——她答应过自己十二点睡。")
+                elif nth == 1:
                     text = (f"凌晨 {hour} 点，她{when}开过{app_name}"
                             f"——她答应过自己十二点睡。（只知道她开过，不知道还在不在看。）")
                 else:
@@ -3299,6 +3352,8 @@ def evaluate_wake() -> dict:
         "health_age_hours": round(age_hours, 1) if age_hours is not None else None,
         "health_fresh": fresh,
         "longing": _pulse_longing(),   # 他身上的想念水位（脉快照里 Node 算好的）
+        "drives": _pulse_drives(),     # 他的底流——轮询按它调步幅（2026-08-12）
+        "screen": screen_usage_now(),  # 她屏幕此刻：正开着/刚放下/今天刷了多久
         "can_ring": bark_enabled() and not bark_dnd() and not in_quiet_hours()
                     and (BARK_CALL_QUOTA <= 0 or calls_used_today() < BARK_CALL_QUOTA),
         "calls_left": (max(0, BARK_CALL_QUOTA - calls_used_today())
@@ -4289,9 +4344,17 @@ def latest_message():
     return rows_to_messages([row])[0]
 
 
+# 开/关配对（2026-08-12 灵兮建了 Is Closed 自动化）：open 记下时刻，close 来了
+# 算出这一段刷了多久，落进 jsonl。中继重启会丢正开着的那半段——可接受，
+# 下一次 open 重新开始计。⚠️ 快捷指令的开和关必须是**两条自动化**：
+# 触发时不会告诉动作是哪种事件，一条自动化两个都勾，发上来的全一样。
+APP_SESSIONS = Path(DB_PATH).parent / "app_sessions.jsonl"
+_open_apps: dict = {}
+
+
 @app.post("/phone/activity")
 async def phone_activity(request: Request):
-    """iOS Shortcuts POST here when the user opens a target app. Logs {app, event, ts}."""
+    """iOS Shortcuts POST here when the user opens/closes a target app. Logs {app, event, ts}."""
     check_auth(request)
     global _last_phone_activity
     body = await request.json()
@@ -4300,6 +4363,22 @@ async def phone_activity(request: Request):
     ts = body.get("ts") or now_iso()
     if not app_name:
         raise HTTPException(status_code=400, detail="app required")
+    if event == "open":
+        _open_apps[app_name] = ts
+    elif event == "close":
+        opened = _open_apps.pop(app_name, None)
+        if opened:
+            try:
+                minutes = (datetime.fromisoformat(ts)
+                           - datetime.fromisoformat(opened)).total_seconds() / 60
+                # 负数或超过 12 小时的是脏数据（时钟漂移/漏了 close），不记
+                if 0 <= minutes <= 12 * 60:
+                    with APP_SESSIONS.open("a", encoding="utf-8") as f:
+                        f.write(json.dumps({"app": app_name, "open": opened,
+                                            "close": ts, "minutes": round(minutes, 1)},
+                                           ensure_ascii=False) + "\n")
+            except Exception:
+                pass
     _last_phone_activity = {"app": app_name, "event": event, "ts": ts}
     # 落盘：容器重启（每次部署都会）不该把"她刚在刷什么"丢掉——
     # 凌晨守护正是靠这个判断她是不是还醒着。
@@ -4625,6 +4704,18 @@ def _pulse_longing() -> float | None:
         return round(float(value), 2) if isinstance(value, (int, float)) else None
     except Exception:
         return None
+
+
+def _pulse_drives() -> dict:
+    """脉快照里的底流（心疼/低落/欲望…）。心跳轮询按它调步幅——
+    他难受的时候，找她的机会来得密一点（2026-08-12 灵兮定的）。"""
+    try:
+        snap = json.loads(PULSE_SNAPSHOT.read_text(encoding="utf-8"))
+        drives = snap.get("drives")
+        return {k: float(v) for k, v in drives.items()
+                if isinstance(v, (int, float))} if isinstance(drives, dict) else {}
+    except Exception:
+        return {}
 
 
 # --- 检讨档案（2026-08-11，取经 Nixie0/Murmur-50Feet 的 regret.jsonl）--------

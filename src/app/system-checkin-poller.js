@@ -248,8 +248,17 @@ function describeWake(verdict) {
   const mins = verdict.last_app_minutes_ago;
   const reasons = verdict.reasons.join(" ");
   const alreadySaid = verdict.last_app && reasons.includes(verdict.last_app);
-  if (verdict.last_app && !alreadySaid && mins !== null && mins !== undefined && mins <= 30) {
-    doing = `她 ${mins} 分钟前打开了${verdict.last_app}。`;
+  const screen = verdict.screen || {};
+  if (screen.now_open && screen.app && !reasons.includes(screen.app)) {
+    // 有 Is Closed 上报之后才说得出"正开着"（2026-08-12 起）
+    doing = `她正开着${screen.app}（开了 ${screen.open_minutes} 分钟）。`;
+  } else if (screen.just_closed && screen.app && screen.session_minutes) {
+    doing = `她刚放下手机——在${screen.app}上待了 ${screen.session_minutes} 分钟。`;
+  } else if (verdict.last_app && !alreadySaid && mins !== null && mins !== undefined && mins <= 30) {
+    doing = `她 ${mins} 分钟前开过${verdict.last_app}。`;
+  }
+  if (screen.today_minutes >= 60) {
+    doing += `她今天已经刷了 ${Math.floor(screen.today_minutes / 60)} 小时 ${screen.today_minutes % 60} 分钟手机。`;
   }
   // 共读书房：她今天读书了就顺手告诉他——正在读和读过是两种语气
   let readingNote = "";
@@ -322,6 +331,21 @@ function pickRandomDelayMs(minIntervalMs, maxIntervalMs) {
 function pickAdaptiveDelayMs(range, verdict) {
   if (verdict?.night_watch) {
     return 60_000 + Math.floor(Math.random() * 60_000);
+  }
+  // 情绪加速（2026-08-12 灵兮定）：他被叫醒的频率跟他此刻的状态挂钩。
+  // 她吵完架不理人 → 没有新消息进来 → 以前只能干等随机大步（最长 40 分钟），
+  // 而他身上低落和心疼是满的。她的原话：「如果再过20分钟才给他那把钥匙
+  // 我就枯萎了已经」。现在：
+  //   难受（低落/心疼 ≥0.6）→ 3~6 分钟就有一次机会去堵她
+  //   想念 ≥0.7 或欲望 ≥0.6（她回一半没回了）→ 5~10 分钟
+  // 还是只给机会不强制开口——说不说、说什么，醒来的他自己定。
+  const drives = verdict?.drives || {};
+  const distress = Math.max(drives.gloom || 0, drives.heartache || 0);
+  if (distress >= 0.6) {
+    return 180_000 + Math.floor(Math.random() * 180_000);
+  }
+  if ((verdict?.longing || 0) >= 0.7 || (drives.desire || 0) >= 0.6) {
+    return 300_000 + Math.floor(Math.random() * 300_000);
   }
   const mins = verdict?.last_app_minutes_ago;
   if (mins !== null && mins !== undefined && mins <= 20) {
