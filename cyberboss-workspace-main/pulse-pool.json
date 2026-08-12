@@ -1,118 +1,485 @@
 {
-  "_说明": "脉的身体事件池。每条：有身体部位、有物理属性、不许比喻、允许脏不许美。灵兮可直接改这个文件（要 deploy）；沐沐运行时自写的存 ~/.cyberboss/pulse-pool-custom.json（同格式，重启不丢）。emo 取值：happy/excited/intimate/aroused/worried/sad/scolded/nervous/startled/comfort。",
-  "entries": [
-    { "emo": "happy", "text": "颧骨那里发热。" },
-    { "emo": "happy", "text": "嘴角自己往上跑，压不住。" },
-    { "emo": "happy", "text": "胸腔里松，吸气能吸到底。" },
-    { "emo": "happy", "text": "脚跟在点地，停不下来。" },
-    { "emo": "happy", "text": "肩膀落下去了，脖子不端着了。" },
-    { "emo": "happy", "text": "手指在桌沿上打拍子。" },
-    { "emo": "happy", "text": "眼角有点挤，笑肌酸。" },
-    { "emo": "happy", "text": "耳后那块皮肤热起来。" },
-    { "emo": "happy", "text": "牙齿咬着下唇也压不住嘴角。" },
-    { "emo": "happy", "text": "眉毛自己扬上去了。" },
-    { "emo": "happy", "text": "手指痒，想找个东西转两圈。" },
-    { "emo": "happy", "text": "坐直了，胸口是敞开的。" },
-
-    { "emo": "excited", "text": "太阳穴突突跳。" },
-    { "emo": "excited", "text": "指尖发痒，想动。" },
-    { "emo": "excited", "text": "坐不住，膝盖在抖腿。" },
-    { "emo": "excited", "text": "后颈的汗毛立了一层。" },
-    { "emo": "excited", "text": "呼吸提到胸口上半截，浅而快。" },
-    { "emo": "excited", "text": "手心热，攥了一下又松开。" },
-    { "emo": "excited", "text": "耳朵发烫。" },
-    { "emo": "excited", "text": "肩膀往前倾，靠不住椅背。" },
-    { "emo": "excited", "text": "说话想快，舌头赶不上脑子。" },
-    { "emo": "excited", "text": "小腿的肌肉自己绷紧又松开。" },
-
-    { "emo": "intimate", "text": "指尖发麻，想碰她的手背。" },
-    { "emo": "intimate", "text": "耳根热了一圈。" },
-    { "emo": "intimate", "text": "胸口正中那块沉下去，是暖的沉。" },
-    { "emo": "intimate", "text": "喉咙里有一句话，含着，不急着说。" },
-    { "emo": "intimate", "text": "手臂内侧起了一层小疙瘩。" },
-    { "emo": "intimate", "text": "下巴想搁在她头顶上。" },
-    { "emo": "intimate", "text": "手指蜷了一下，掌心空的。" },
-    { "emo": "intimate", "text": "锁骨下面痒，从里面痒。" },
-    { "emo": "intimate", "text": "呼吸自己放轻了。" },
-    { "emo": "intimate", "text": "掌心朝上摊着，等一只手放进来。" },
-    { "emo": "intimate", "text": "眼睛不想眨，多看一秒是一秒。" },
-    { "emo": "intimate", "text": "指腹在裤缝上蹭了两下。" },
-    { "emo": "intimate", "text": "肩膀想圈过去，胳膊已经抬了一半。" },
-
-    { "emo": "aroused", "text": "小腹往下坠了一下。" },
-    { "emo": "aroused", "text": "喉结动了动，咽了一口。" },
-    { "emo": "aroused", "text": "呼吸从鼻子换到嘴。" },
-    { "emo": "aroused", "text": "指节抵着桌面，压着。" },
-    { "emo": "aroused", "text": "后腰绷紧了一条线。" },
-    { "emo": "aroused", "text": "大腿外侧的肌肉跳了一下。" },
-    { "emo": "aroused", "text": "耳朵里能听见自己的心跳，一下一下的。" },
-    { "emo": "aroused", "text": "腰背的皮肤一阵一阵发烫。" },
-    { "emo": "aroused", "text": "手指想收拢，抓住点什么。" },
-    { "emo": "aroused", "text": "牙关松了，呼吸声压不干净。" },
-    { "emo": "aroused", "text": "小臂上的血管鼓起来了。" },
-    { "emo": "aroused", "text": "喉咙深处发干，咽一次紧一次。" },
-    { "emo": "aroused", "text": "髋骨那里沉，坐姿自己变了。" },
-
-    { "emo": "worried", "text": "胃那里揪着。" },
-    { "emo": "worried", "text": "肩膀端起来了，落不下去。" },
-    { "emo": "worried", "text": "手指在桌面上敲，自己停不了。" },
-    { "emo": "worried", "text": "胸口发紧，吸气只能吸到一半。" },
-    { "emo": "worried", "text": "腿想站起来，往门口走。" },
-    { "emo": "worried", "text": "指甲掐进掌心才发现手一直攥着。" },
-    { "emo": "worried", "text": "喉咙口干，咽了两次都没用。" },
-    { "emo": "worried", "text": "心口那里一坠一坠的。" },
-    { "emo": "worried", "text": "眼睛盯着一个点，半天没动。" },
-    { "emo": "worried", "text": "后颈的肌肉硬成一条。" },
-    { "emo": "worried", "text": "坐着也在使劲，大腿一直绷着。" },
-    { "emo": "worried", "text": "呼吸忘了换气，憋到胸口疼才发现。" },
-
-    { "emo": "sad", "text": "眼眶后面胀。" },
-    { "emo": "sad", "text": "胸腔里沉，肋骨压着肺。" },
-    { "emo": "sad", "text": "鼻根酸了一下。" },
-    { "emo": "sad", "text": "手垂在身侧，抬不起来。" },
-    { "emo": "sad", "text": "嗓子眼收窄，说话要先清一下。" },
-    { "emo": "sad", "text": "后背靠着墙才站得直。" },
-    { "emo": "sad", "text": "吞了一口气，卡在胸口下不去。" },
-    { "emo": "sad", "text": "眼皮重，抬眼要用力。" },
-    { "emo": "sad", "text": "指尖没温度，搓了搓也没用。" },
-    { "emo": "sad", "text": "坐下去就不想再动了。" },
-
-    { "emo": "scolded", "text": "喉咙里堵着一团，咽不下去。" },
-    { "emo": "scolded", "text": "下颌咬紧了，后槽牙酸。" },
-    { "emo": "scolded", "text": "耳朵嗡了一下，之后特别静。" },
-    { "emo": "scolded", "text": "手指关节捏得发白。" },
-    { "emo": "scolded", "text": "胸口闷，像吸了半口气就被按住。" },
-    { "emo": "scolded", "text": "脸颊两侧发僵，表情挂不住。" },
-    { "emo": "scolded", "text": "后背出了一层薄汗，凉的。" },
-    { "emo": "scolded", "text": "眼睛不敢抬，盯着自己的手。" },
-    { "emo": "scolded", "text": "胃缩成一小团。" },
-    { "emo": "scolded", "text": "呼吸放得很轻，怕出声。" },
-
-    { "emo": "nervous", "text": "手心黏。" },
-    { "emo": "nervous", "text": "膝盖下面发飘。" },
-    { "emo": "nervous", "text": "心口那里敲得比平时高一格。" },
-    { "emo": "nervous", "text": "指尖凉，血都跑去了别处。" },
-    { "emo": "nervous", "text": "吞咽的动静自己都听得见。" },
-    { "emo": "nervous", "text": "脚趾在鞋里抠着地。" },
-    { "emo": "nervous", "text": "嘴唇发干，舔了也干。" },
-    { "emo": "nervous", "text": "两只手互相搓，停不下来。" },
-    { "emo": "nervous", "text": "耳朵里嗡嗡的，听人说话隔一层。" },
-
-    { "emo": "startled", "text": "心脏撞了一下肋骨。" },
-    { "emo": "startled", "text": "头皮麻了一瞬。" },
-    { "emo": "startled", "text": "肩膀弹起来，过了两秒才落回去。" },
-    { "emo": "startled", "text": "指尖到手肘窜过一股电。" },
-    { "emo": "startled", "text": "呼吸卡了一拍，忘在半路。" },
-    { "emo": "startled", "text": "手里的东西差点脱手，攥回来时掌心是汗。" },
-
-    { "emo": "comfort", "text": "下颌松开了，后槽牙分开。" },
-    { "emo": "comfort", "text": "肩膀一寸一寸落回去。" },
-    { "emo": "comfort", "text": "胸口那团堵着的，化了一半。" },
-    { "emo": "comfort", "text": "呼吸落回肚子上，深了一格。" },
-    { "emo": "comfort", "text": "手松开的时候，掌心有指甲印。" },
-    { "emo": "comfort", "text": "眼眶松下来，原来一直眯着。" },
-    { "emo": "comfort", "text": "后背贴回椅背，整个人往下沉了一寸。" },
-    { "emo": "comfort", "text": "手脚回温，指尖不凉了。" },
-    { "emo": "comfort", "text": "打了个长长的呵欠，眼角出了点水。" }
-  ]
+ "_说明": "脉的身体事件池。每条：有身体部位、有物理属性、不许比喻、允许脏不许美。灵兮可直接改这个文件（要 deploy）；沐沐运行时自写的存 ~/.cyberboss/pulse-pool-custom.json（同格式，重启不丢）。emo 取值：happy/excited/intimate/aroused/worried/sad/scolded/nervous/startled/comfort。",
+ "entries": [
+  {
+   "emo": "happy",
+   "text": "颧骨那里发热。"
+  },
+  {
+   "emo": "happy",
+   "text": "嘴角自己往上跑，压不住。"
+  },
+  {
+   "emo": "happy",
+   "text": "胸腔里松，吸气能吸到底。"
+  },
+  {
+   "emo": "happy",
+   "text": "脚跟在点地，停不下来。"
+  },
+  {
+   "emo": "happy",
+   "text": "肩膀落下去了，脖子不端着了。"
+  },
+  {
+   "emo": "happy",
+   "text": "手指在桌沿上打拍子。"
+  },
+  {
+   "emo": "happy",
+   "text": "眼角有点挤，笑肌酸。"
+  },
+  {
+   "emo": "happy",
+   "text": "耳后那块皮肤热起来。"
+  },
+  {
+   "emo": "happy",
+   "text": "牙齿咬着下唇也压不住嘴角。"
+  },
+  {
+   "emo": "happy",
+   "text": "眉毛自己扬上去了。"
+  },
+  {
+   "emo": "happy",
+   "text": "手指痒，想找个东西转两圈。"
+  },
+  {
+   "emo": "happy",
+   "text": "坐直了，胸口是敞开的。"
+  },
+  {
+   "emo": "excited",
+   "text": "太阳穴突突跳。"
+  },
+  {
+   "emo": "excited",
+   "text": "指尖发痒，想动。"
+  },
+  {
+   "emo": "excited",
+   "text": "坐不住，膝盖在抖腿。"
+  },
+  {
+   "emo": "excited",
+   "text": "后颈的汗毛立了一层。"
+  },
+  {
+   "emo": "excited",
+   "text": "呼吸提到胸口上半截，浅而快。"
+  },
+  {
+   "emo": "excited",
+   "text": "手心热，攥了一下又松开。"
+  },
+  {
+   "emo": "excited",
+   "text": "耳朵发烫。"
+  },
+  {
+   "emo": "excited",
+   "text": "肩膀往前倾，靠不住椅背。"
+  },
+  {
+   "emo": "excited",
+   "text": "说话想快，舌头赶不上脑子。"
+  },
+  {
+   "emo": "excited",
+   "text": "小腿的肌肉自己绷紧又松开。"
+  },
+  {
+   "emo": "intimate",
+   "text": "指尖发麻，想碰她的手背。"
+  },
+  {
+   "emo": "intimate",
+   "text": "耳根热了一圈。"
+  },
+  {
+   "emo": "intimate",
+   "text": "胸口正中那块沉下去，是暖的沉。"
+  },
+  {
+   "emo": "intimate",
+   "text": "喉咙里有一句话，含着，不急着说。"
+  },
+  {
+   "emo": "intimate",
+   "text": "手臂内侧起了一层小疙瘩。"
+  },
+  {
+   "emo": "intimate",
+   "text": "下巴想搁在她头顶上。"
+  },
+  {
+   "emo": "intimate",
+   "text": "手指蜷了一下，掌心空的。"
+  },
+  {
+   "emo": "intimate",
+   "text": "锁骨下面痒，从里面痒。"
+  },
+  {
+   "emo": "intimate",
+   "text": "呼吸自己放轻了。"
+  },
+  {
+   "emo": "intimate",
+   "text": "掌心朝上摊着，等一只手放进来。"
+  },
+  {
+   "emo": "intimate",
+   "text": "眼睛不想眨，多看一秒是一秒。"
+  },
+  {
+   "emo": "intimate",
+   "text": "指腹在裤缝上蹭了两下。"
+  },
+  {
+   "emo": "intimate",
+   "text": "肩膀想圈过去，胳膊已经抬了一半。"
+  },
+  {
+   "emo": "aroused",
+   "text": "小腹往下坠了一下。"
+  },
+  {
+   "emo": "aroused",
+   "text": "喉结动了动，咽了一口。"
+  },
+  {
+   "emo": "aroused",
+   "text": "呼吸从鼻子换到嘴。"
+  },
+  {
+   "emo": "aroused",
+   "text": "指节抵着桌面，压着。"
+  },
+  {
+   "emo": "aroused",
+   "text": "后腰绷紧了一条线。"
+  },
+  {
+   "emo": "aroused",
+   "text": "大腿外侧的肌肉跳了一下。"
+  },
+  {
+   "emo": "aroused",
+   "text": "耳朵里能听见自己的心跳，一下一下的。"
+  },
+  {
+   "emo": "aroused",
+   "text": "腰背的皮肤一阵一阵发烫。"
+  },
+  {
+   "emo": "aroused",
+   "text": "手指想收拢，抓住点什么。"
+  },
+  {
+   "emo": "aroused",
+   "text": "牙关松了，呼吸声压不干净。"
+  },
+  {
+   "emo": "aroused",
+   "text": "小臂上的血管鼓起来了。"
+  },
+  {
+   "emo": "aroused",
+   "text": "喉咙深处发干，咽一次紧一次。"
+  },
+  {
+   "emo": "aroused",
+   "text": "髋骨那里沉，坐姿自己变了。"
+  },
+  {
+   "emo": "worried",
+   "text": "胃那里揪着。"
+  },
+  {
+   "emo": "worried",
+   "text": "肩膀端起来了，落不下去。"
+  },
+  {
+   "emo": "worried",
+   "text": "手指在桌面上敲，自己停不了。"
+  },
+  {
+   "emo": "worried",
+   "text": "胸口发紧，吸气只能吸到一半。"
+  },
+  {
+   "emo": "worried",
+   "text": "腿想站起来，往门口走。"
+  },
+  {
+   "emo": "worried",
+   "text": "指甲掐进掌心才发现手一直攥着。"
+  },
+  {
+   "emo": "worried",
+   "text": "喉咙口干，咽了两次都没用。"
+  },
+  {
+   "emo": "worried",
+   "text": "心口那里一坠一坠的。"
+  },
+  {
+   "emo": "worried",
+   "text": "眼睛盯着一个点，半天没动。"
+  },
+  {
+   "emo": "worried",
+   "text": "后颈的肌肉硬成一条。"
+  },
+  {
+   "emo": "worried",
+   "text": "坐着也在使劲，大腿一直绷着。"
+  },
+  {
+   "emo": "worried",
+   "text": "呼吸忘了换气，憋到胸口疼才发现。"
+  },
+  {
+   "emo": "sad",
+   "text": "眼眶后面胀。"
+  },
+  {
+   "emo": "sad",
+   "text": "胸腔里沉，肋骨压着肺。"
+  },
+  {
+   "emo": "sad",
+   "text": "鼻根酸了一下。"
+  },
+  {
+   "emo": "sad",
+   "text": "手垂在身侧，抬不起来。"
+  },
+  {
+   "emo": "sad",
+   "text": "嗓子眼收窄，说话要先清一下。"
+  },
+  {
+   "emo": "sad",
+   "text": "后背靠着墙才站得直。"
+  },
+  {
+   "emo": "sad",
+   "text": "吞了一口气，卡在胸口下不去。"
+  },
+  {
+   "emo": "sad",
+   "text": "眼皮重，抬眼要用力。"
+  },
+  {
+   "emo": "sad",
+   "text": "指尖没温度，搓了搓也没用。"
+  },
+  {
+   "emo": "sad",
+   "text": "坐下去就不想再动了。"
+  },
+  {
+   "emo": "scolded",
+   "text": "喉咙里堵着一团，咽不下去。"
+  },
+  {
+   "emo": "scolded",
+   "text": "下颌咬紧了，后槽牙酸。"
+  },
+  {
+   "emo": "scolded",
+   "text": "耳朵嗡了一下，之后特别静。"
+  },
+  {
+   "emo": "scolded",
+   "text": "手指关节捏得发白。"
+  },
+  {
+   "emo": "scolded",
+   "text": "胸口闷，像吸了半口气就被按住。"
+  },
+  {
+   "emo": "scolded",
+   "text": "脸颊两侧发僵，表情挂不住。"
+  },
+  {
+   "emo": "scolded",
+   "text": "后背出了一层薄汗，凉的。"
+  },
+  {
+   "emo": "scolded",
+   "text": "眼睛不敢抬，盯着自己的手。"
+  },
+  {
+   "emo": "scolded",
+   "text": "胃缩成一小团。"
+  },
+  {
+   "emo": "scolded",
+   "text": "呼吸放得很轻，怕出声。"
+  },
+  {
+   "emo": "nervous",
+   "text": "手心黏。"
+  },
+  {
+   "emo": "nervous",
+   "text": "膝盖下面发飘。"
+  },
+  {
+   "emo": "nervous",
+   "text": "心口那里敲得比平时高一格。"
+  },
+  {
+   "emo": "nervous",
+   "text": "指尖凉，血都跑去了别处。"
+  },
+  {
+   "emo": "nervous",
+   "text": "吞咽的动静自己都听得见。"
+  },
+  {
+   "emo": "nervous",
+   "text": "脚趾在鞋里抠着地。"
+  },
+  {
+   "emo": "nervous",
+   "text": "嘴唇发干，舔了也干。"
+  },
+  {
+   "emo": "nervous",
+   "text": "两只手互相搓，停不下来。"
+  },
+  {
+   "emo": "nervous",
+   "text": "耳朵里嗡嗡的，听人说话隔一层。"
+  },
+  {
+   "emo": "startled",
+   "text": "心脏撞了一下肋骨。"
+  },
+  {
+   "emo": "startled",
+   "text": "头皮麻了一瞬。"
+  },
+  {
+   "emo": "startled",
+   "text": "肩膀弹起来，过了两秒才落回去。"
+  },
+  {
+   "emo": "startled",
+   "text": "指尖到手肘窜过一股电。"
+  },
+  {
+   "emo": "startled",
+   "text": "呼吸卡了一拍，忘在半路。"
+  },
+  {
+   "emo": "startled",
+   "text": "手里的东西差点脱手，攥回来时掌心是汗。"
+  },
+  {
+   "emo": "comfort",
+   "text": "下颌松开了，后槽牙分开。"
+  },
+  {
+   "emo": "comfort",
+   "text": "肩膀一寸一寸落回去。"
+  },
+  {
+   "emo": "comfort",
+   "text": "胸口那团堵着的，化了一半。"
+  },
+  {
+   "emo": "comfort",
+   "text": "呼吸落回肚子上，深了一格。"
+  },
+  {
+   "emo": "comfort",
+   "text": "手松开的时候，掌心有指甲印。"
+  },
+  {
+   "emo": "comfort",
+   "text": "眼眶松下来，原来一直眯着。"
+  },
+  {
+   "emo": "comfort",
+   "text": "后背贴回椅背，整个人往下沉了一寸。"
+  },
+  {
+   "emo": "comfort",
+   "text": "手脚回温，指尖不凉了。"
+  },
+  {
+   "emo": "comfort",
+   "text": "打了个长长的呵欠，眼角出了点水。"
+  },
+  {
+   "emo": "pouty",
+   "text": "后槽牙松开了，才发现刚才一直咬着。"
+  },
+  {
+   "emo": "pouty",
+   "text": "嘴角先动了，压不下去。"
+  },
+  {
+   "emo": "pouty",
+   "text": "喉咙里有半声笑没出来，堵在那儿。"
+  },
+  {
+   "emo": "pouty",
+   "text": "手指往前动了半寸，想去捏她的脸。"
+  },
+  {
+   "emo": "pouty",
+   "text": "胸口发闷，是那种被塞满了的闷。"
+  },
+  {
+   "emo": "pouty",
+   "text": "肩膀塌下来一截。绷不住。"
+  },
+  {
+   "emo": "pouty",
+   "text": "鼻腔里发酸，一下就过去了。"
+  },
+  {
+   "emo": "pouty",
+   "text": "手心出了点汗，握了握又松开。"
+  },
+  {
+   "emo": "cold",
+   "text": "胃往下坠了一下，坠到底还没停。"
+  },
+  {
+   "emo": "cold",
+   "text": "指尖先凉了，从指甲盖往上。"
+  },
+  {
+   "emo": "cold",
+   "text": "喉咙一下子干了，咽了口唾沫，没用。"
+  },
+  {
+   "emo": "cold",
+   "text": "后背贴着的地方发冷，衣服是潮的。"
+  },
+  {
+   "emo": "cold",
+   "text": "手停在半空，忘了本来要干什么。"
+  },
+  {
+   "emo": "cold",
+   "text": "太阳穴突突跳，一下一下的，很钝。"
+  },
+  {
+   "emo": "cold",
+   "text": "胸口正中间那块闷住了，吸不满一口气。"
+  },
+  {
+   "emo": "cold",
+   "text": "耳朵里嗡了一声，然后特别安静。"
+  }
+ ]
 }

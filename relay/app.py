@@ -4660,6 +4660,61 @@ async def pulse_boost(request: Request):
     return {"ok": True, "drive": drive, "amount": amount}
 
 
+# --- 💭 碎碎念（2026-08-12，取经 Cheiineeey/always-here）--------------------
+# 他现在所有的内心话都挂在回复上——她不说话，他脑子里就什么都不产生
+#（除了凌晨两点那篇日记）。碎碎念补的是这个：**没有对象、不等她开口、
+# 想到就记一句**。原项目是每天中午和晚上各跑一次，她说「可以不用每天两遍
+# 随时记」——所以这里没有钟，只有他自己想写的时候。
+#
+# 跟已有的几样分工：日记是一天的总结（有钟）、信是写给她的（有收件人）、
+# 检讨是认错（有对象）、身体事件池是从词条里抽的（不是他写的）。
+# 碎碎念是唯一一个**没有交付对象**的——写给自己，她想看的时候翻。
+MURMURS_FILE = Path(DB_PATH).parent / "murmurs.jsonl"
+
+
+@app.post("/murmur")
+async def murmur_write(request: Request):
+    """他记一句碎碎念。mood 可选（脉的情绪键），前端拿来上色。"""
+    check_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    text = str(body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="empty text")
+    entry = {
+        "id": int(time.time() * 1000),
+        "ts": now_iso(),
+        "text": text[:800],
+        "mood": str(body.get("mood") or "").strip()[:20],
+    }
+    with MURMURS_FILE.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return {"ok": True, "id": entry["id"]}
+
+
+@app.get("/murmur")
+async def murmur_list(request: Request, limit: int = 50, before: int = 0):
+    """她翻他的碎碎念。倒序，before 传上一页最小的 id 就能往前翻。"""
+    check_auth(request)
+    items: list[dict] = []
+    try:
+        for line in MURMURS_FILE.read_text(encoding="utf-8").splitlines():
+            try:
+                items.append(json.loads(line))
+            except Exception:
+                continue
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    items.sort(key=lambda x: x.get("id") or 0, reverse=True)
+    if before:
+        items = [x for x in items if (x.get("id") or 0) < before]
+    return {"murmurs": items[:max(1, min(limit, 200))], "total": len(items)}
+
+
 # --- 🎬 看片模式（2026-08-11）------------------------------------------------
 # 循环跑在 Node 那边（浏览器桥在它手上），中继只当开关：往信箱写一行，
 # Node 每 5 秒收一次。跟脉的 nudge 一个套路。
