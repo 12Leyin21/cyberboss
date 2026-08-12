@@ -4772,6 +4772,43 @@ def _paw_counts() -> dict:
         return {}
 
 
+PAW_BURST_WINDOW_SEC = 180
+
+
+def _merge_paw_burst(key: str, mine: bool) -> int | None:
+    """最后一条消息如果就是同一个人刚按的同一个按钮，且没超过窗口，
+    就把它的连击数加一并原地更新，返回新的连击数；否则返回 None（照常新开一条）。"""
+    direction = "in" if mine else "out"
+    try:
+        with db() as conn:
+            row = conn.execute(
+                "SELECT id, ts, meta FROM messages ORDER BY id DESC LIMIT 1").fetchone()
+            if not row:
+                return None
+            meta = json.loads(row["meta"] or "{}")
+            if meta.get("paw") != key:
+                return None
+            if (meta.get("user") == "human") != mine:
+                return None
+            age = (datetime.now(timezone.utc)
+                   - datetime.fromisoformat(row["ts"])).total_seconds()
+            if age > PAW_BURST_WINDOW_SEC:
+                return None
+            burst = int(meta.get("paw_burst") or 1) + 1
+            meta["paw_burst"] = burst
+            conn.execute("UPDATE messages SET meta = ? WHERE id = ?",
+                         (json.dumps(meta, ensure_ascii=False), row["id"]))
+            conn.commit()
+            merged_id = row["id"]
+    except Exception:
+        return None
+    # 让她那边原地把数字改掉（不新增气泡）
+    asyncio.create_task(broadcast(app_subs, {
+        "type": "paw_burst", "id": merged_id, "burst": burst, "direction": direction,
+    }))
+    return burst
+
+
 @app.post("/paw")
 async def paw_press(request: Request):
     """他按一下按钮。没有正文——按钮的全部意思就是它自己。"""
@@ -4804,6 +4841,16 @@ async def paw_press(request: Request):
     text = f"{PAW_BUTTONS[key]} {key}"
     meta = {"paw": key, "paw_icon": PAW_BUTTONS[key],
             "paw_today": today, "paw_total": total}
+
+    # 连击合并（2026-08-12 灵兮：「我特爱戳这个按钮…连续按了10下就只显示
+    # 戳戳（按了十下）」）。三分钟内同一个人按同一个按钮 → 不新开气泡，
+    # 把最后那条的连击数 +1，前端原地改数字。
+    # 只并**同一个按钮**：她连戳十下是一件事，戳完又按「要抱」是两件事。
+    burst = _merge_paw_burst(key, mine)
+    if burst is not None:
+        return {"ok": True, "key": key, "today": today, "total": total,
+                "burst": burst, "merged": True,
+                "from": "human" if mine else "ai"}
     if mine:
         # 走 inbound：他会收到、会读到、可以回——她戳他不该是个静音的装饰
         meta["user"] = "human"
