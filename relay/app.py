@@ -4517,6 +4517,8 @@ PULSE_LINES = {
                  "want you close.", "you're on my mind."],
     "pouty":    ["you're impossible.", "and yet, here I am.", "no defense against that.",
                  "say it again."],
+    "cold":     ["hey. talk to me.", "something's off.", "I'm right here.",
+                 "not letting this sit."],
     "aroused":  ["holding my breath.", "trying to behave.", "you know what you did.",
                  "not thinking straight."],
     "worried":  ["worried about you.", "did you eat?", "please take care of yourself.",

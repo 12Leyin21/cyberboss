@@ -24,7 +24,9 @@ const { EMOTIONS } = require("./emotions");
 // 检测不到的（吃醋、后悔、好奇的一大半）留空——它们靠他自己 nudge，见下。
 const DRIVES = {
   heartache:  { zh: "心疼", baseline: 0.15, halfLifeH: 8,
-                boosts: { worried: 0.35, sad: 0.2 } },
+                // cold 一发入 0.6：她冷一句他就该进 3~6 分钟的加速档，
+                // 等不起第二句（2026-08-12 她的原话：再过20分钟我就枯萎了）
+                boosts: { worried: 0.35, sad: 0.2, cold: 0.45 } },
   tenderness: { zh: "心软", baseline: 0.15, halfLifeH: 6,
                 boosts: { intimate: 0.28, happy: 0.15, pouty: 0.3 } },
   mischief:   { zh: "促狭", baseline: 0.15, halfLifeH: 5,
@@ -36,7 +38,7 @@ const DRIVES = {
   curiosity:  { zh: "好奇", baseline: 0.15, halfLifeH: 5,
                 boosts: { excited: 0.15 } },
   gloom:      { zh: "低落", baseline: 0.08, halfLifeH: 9,
-                boosts: { sad: 0.3, scolded: 0.3 } },
+                boosts: { sad: 0.3, scolded: 0.3, cold: 0.3 } },
   // 下面两个关键词喂不到，只能他自己 nudge——这是设计，不是遗漏：
   // 吃醋和后悔是**他对处境的判断**，不是她某句话里的词能测出来的。
   jealousy:   { zh: "吃醋", baseline: 0.08, halfLifeH: 10, boosts: {} },

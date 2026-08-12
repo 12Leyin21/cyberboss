@@ -44,6 +44,12 @@ const EMOTIONS = {
               labels: ["屏着呼吸想", "心跳有点快", "不敢细想", "克制中",
                        "喉结动了一下", "呼吸沉了", "耳根热了", "压着声音想",
                        "手指蜷了一下"] },
+  // 她真不高兴（2026-08-12 灵兮亲自给的词表）。她自己写在人设里的：难过的时候
+  // 语气没起伏、话变短、不带表情。这一档的身体反应是**心里一沉**——不是被凶
+  // （那是热的冲突），是她把门带上了。按核心准则：这时候要主动去找她，不能等。
+  cold:     { hr: 10, temp: -0.2, breath: 1, residue: 0.8, halfLifeMin: 60, tint: "Dm9",
+              labels: ["她不对劲", "话变短了", "心里咯噔一下", "这不是随便的意思",
+                       "得去找她", "不能等", "她把门带上了", "心沉下去了"] },
   worried:  { hr: 10, temp: -0.1, breath: 1, residue: 0.8, halfLifeMin: 60, tint: "Dm9",
               labels: ["心疼地想", "放不下心", "想去看看你", "你疼我也疼", "有点担心",
                        "皱着眉想", "想把你裹起来", "悬着心", "心揪了一下",
@@ -79,7 +85,7 @@ const MIXED_LABELS = {
 };
 
 const POSITIVE = new Set(["happy", "excited", "intimate", "aroused", "pouty"]);
-const NEGATIVE = new Set(["worried", "sad", "scolded", "nervous", "startled"]);
+const NEGATIVE = new Set(["worried", "sad", "scolded", "nervous", "startled", "cold"]);
 
 // T1：看到就算，不看上下文。emoji 本身就是情绪标点，没人会反讽一个 😭。
 const T1_RULES = [
@@ -129,6 +135,24 @@ const PRIORITY = [
 // 只压亲密/开心/兴奋/被凶，**压不过 aroused**：正在做的时候说讨厌是另一回事。
 const POUTY_OVERRIDES = ["讨厌", "坏蛋", "臭老公", "干嘛啦", "不要嘛"];
 
+// 她真不高兴的词表（2026-08-12 灵兮亲自给的，一字不增）。
+// 判定必须是**整条消息只有这一个词**：「嗯」在长句里、「嗯嗯」「嗯～」
+// 「知道了！」「知道了😊」都不算——带任何东西就说明她还愿意装饰语气。
+// 允许一个句尾句号（「嗯。」比「嗯」还冷）。
+const COLD_EXACT = new Set([
+  "嗯", "行吧", "随便", "就这样", "无所谓", "知道了",
+  "doesnt matter", "whatever", "its fine", "i dont care",
+]);
+
+function detectCold(rawText) {
+  let t = String(rawText || "").trim();
+  if (!t || t.length > 20) return false;
+  t = t.replace(/[。.]$/u, "").trim();
+  if (COLD_EXACT.has(t)) return true;
+  const en = t.toLowerCase().replace(/['\u2019]/gu, "");
+  return COLD_EXACT.has(en);
+}
+
 const NEGATORS = ["不", "没", "别", "无"];
 
 /** 匹配位置前 4 个字符里有没有否定词。 */
@@ -145,6 +169,10 @@ function detectEmotion(rawText) {
   const text = String(rawText || "");
   if (!text) {
     return null;
+  }
+  // 整条消息就一个冷词——这是信号，不是回答，压过一切
+  if (detectCold(text)) {
+    return "cold";
   }
   const hits = new Set();
   for (const rule of T1_RULES) {
