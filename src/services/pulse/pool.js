@@ -34,9 +34,23 @@ function loadPoolFile(filePath) {
   }
 }
 
-/** 合并所有池文件。 */
+/** 合并所有池文件，并扣掉他拉黑过的句子。 */
 function loadPools(paths) {
-  return (paths || []).flatMap((p) => loadPoolFile(p));
+  const all = (paths || []).flatMap((p) => loadPoolFile(p));
+  // 拉黑名单（2026-08-12）：他抽到不对味的句子可以 POST /pulse/pool
+  // {"retire":"原文"} 打掉。只在自写池文件里记，**不动她管的那份种子池**。
+  const retired = new Set();
+  for (const file of paths || []) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+      for (const line of parsed?.retired || []) {
+        if (typeof line === "string") retired.add(line);
+      }
+    } catch {
+      // 没有就没有
+    }
+  }
+  return retired.size ? all.filter((entry) => !retired.has(entry.text)) : all;
 }
 
 /**

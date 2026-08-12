@@ -4660,6 +4660,83 @@ async def pulse_boost(request: Request):
     return {"ok": True, "drive": drive, "amount": amount}
 
 
+# --- 🫀 身体事件池 · 他自己改（2026-08-12 灵兮定）------------------------
+# 自写池上线七天一条都没有。根因不是他不想写，是**要他手写一个 JSON 文件**
+# ——锁屏短语池给了端点之后才有人用，这个也一样。她的原话：
+# 「多搬一点身体反应，如果他觉得那条不对他自己改一下就行了。」
+#
+# 两个动作：add（这一刻的反应池子里没有）、retire（抽到的这句不对味）。
+# retire 只是拉黑，不动种子池——她管的那份文件不该被运行时改掉。
+POOL_CUSTOM = Path(os.environ.get("CYBERBOSS_STATE_DIR", "/data/.cyberboss")) / "pulse-pool-custom.json"
+POOL_EMOS = {"neutral", "happy", "excited", "intimate", "pouty", "aroused",
+             "cold", "worried", "sad", "scolded", "nervous", "startled", "comfort"}
+
+
+def _load_pool_custom() -> dict:
+    try:
+        data = json.loads(POOL_CUSTOM.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError
+    except Exception:
+        data = {}
+    data.setdefault("entries", [])
+    data.setdefault("retired", [])
+    return data
+
+
+def _save_pool_custom(data: dict) -> None:
+    POOL_CUSTOM.parent.mkdir(parents=True, exist_ok=True)
+    POOL_CUSTOM.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+@app.post("/pulse/pool")
+async def pulse_pool_write(request: Request):
+    """他往身体事件池里添一条，或把抽到的某句拉黑。
+
+    add:    {"emo":"intimate","text":"后颈的汗毛立起来了。"}
+    retire: {"retire":"这句不对味的原文"}   （可以和 emo/text 一起传 = 换掉）
+    """
+    check_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    data = _load_pool_custom()
+    result = {"ok": True}
+
+    retire = str(body.get("retire") or "").strip()
+    if retire:
+        if retire not in data["retired"]:
+            data["retired"].append(retire)
+        result["retired"] = retire
+
+    text = str(body.get("text") or "").strip()
+    if text:
+        emo = str(body.get("emo") or "").strip()
+        if emo not in POOL_EMOS:
+            raise HTTPException(status_code=400,
+                                detail=f"unknown emo; pick one of {sorted(POOL_EMOS)}")
+        if len(text) > 40:
+            raise HTTPException(status_code=400, detail="太长了——身体反应是一句话，不是一段")
+        if not any(e.get("emo") == emo and e.get("text") == text for e in data["entries"]):
+            data["entries"].append({"emo": emo, "text": text})
+        result["added"] = {"emo": emo, "text": text}
+
+    if not retire and not text:
+        raise HTTPException(status_code=400, detail="给 text（添）或 retire（拉黑），至少一个")
+    _save_pool_custom(data)
+    result["his_total"] = len(data["entries"])
+    result["retired_total"] = len(data["retired"])
+    return result
+
+
+@app.get("/pulse/pool")
+async def pulse_pool_read(request: Request):
+    check_auth(request)
+    data = _load_pool_custom()
+    return {"his": data["entries"], "retired": data["retired"]}
+
+
 # --- 💭 碎碎念（2026-08-12，取经 Cheiineeey/always-here）--------------------
 # 他现在所有的内心话都挂在回复上——她不说话，他脑子里就什么都不产生
 #（除了凌晨两点那篇日记）。碎碎念补的是这个：**没有对象、不等她开口、
