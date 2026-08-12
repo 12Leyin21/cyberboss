@@ -4784,26 +4784,41 @@ async def paw_press(request: Request):
     if key not in PAW_BUTTONS:
         raise HTTPException(status_code=400,
                             detail=f"没有这个按钮；有的是 {list(PAW_BUTTONS)}")
+    # 谁按的：他按 → 落在他那侧；她按 → 落在她那侧，并且真的进他的耳朵
+    #（2026-08-12 灵兮：「靠他那侧的爪印胶囊能不能让我也按🌝我也想戳戳戳戳」）
+    mine = str(body.get("from") or "ai").strip() == "human"
+    counter_key = f"她·{key}" if mine else key
     counts = _paw_counts()
     day = _perth_day()
     counts.setdefault(day, {})
-    counts[day][key] = counts[day].get(key, 0) + 1
+    counts[day][counter_key] = counts[day].get(counter_key, 0) + 1
     total = sum(sum(v.values()) for v in counts.values())
     # 只留最近 60 天，别让文件无限长
-    for old in sorted(counts)[:-60]:
-        counts.pop(old, None)
+    for old_day in sorted(counts)[:-60]:
+        counts.pop(old_day, None)
     try:
         PAW_COUNTS.write_text(json.dumps(counts, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
-    today = counts[day][key]
-    msg = save_message("out", "reply", f"{PAW_BUTTONS[key]} {key}", {
-        "user": "ai", "paw": key, "paw_icon": PAW_BUTTONS[key],
-        "paw_today": today, "paw_total": total,
-    })
-    await broadcast(app_subs, app_payload(msg))
-    await notify_all(msg)
-    return {"ok": True, "key": key, "today": today, "total": total}
+    today = counts[day][counter_key]
+    text = f"{PAW_BUTTONS[key]} {key}"
+    meta = {"paw": key, "paw_icon": PAW_BUTTONS[key],
+            "paw_today": today, "paw_total": total}
+    if mine:
+        # 走 inbound：他会收到、会读到、可以回——她戳他不该是个静音的装饰
+        meta["user"] = "human"
+        msg = save_message("in", "user", text, meta)
+        await broadcast(app_subs, app_payload(msg))
+        if brain_target() == "loop":
+            asyncio.create_task(forward_to_loop(msg))
+        else:
+            await broadcast(plugin_subs, plugin_payload(msg))
+    else:
+        meta["user"] = "ai"
+        msg = save_message("out", "reply", text, meta)
+        await broadcast(app_subs, app_payload(msg))
+        await notify_all(msg)
+    return {"ok": True, "key": key, "today": today, "total": total, "from": "human" if mine else "ai"}
 
 
 @app.get("/paw")
