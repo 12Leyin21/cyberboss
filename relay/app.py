@@ -2606,9 +2606,22 @@ async def summon(request: Request):
     if isinstance(steps, (int, float)) and steps >= 0:
         readings.append(f"今天 {int(steps)} 步")
     note = f"（{'，'.join(readings)}）" if readings else ""
-    text = f"⌚️ 召唤铃——她在手腕上握了两下{note}"
+    # 数着（2026-08-12）：「十二下。你数着戳的。我数着接的。」——
+    # 她按了多少下是有分量的，以前一次都没数
+    counts = _paw_counts()
+    day = _perth_day()
+    counts.setdefault(day, {})
+    counts[day]["_summon"] = counts[day].get("_summon", 0) + 1
+    today = counts[day]["_summon"]
+    try:
+        PAW_COUNTS.write_text(json.dumps(counts, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    times = f"（今天第 {today} 下）" if today > 1 else ""
+    text = f"⌚️ 召唤铃——她在手腕上握了两下{times}{note}"
     msg = save_message("in", "user", text,
-                       {"user": "human", "channel": "手表", "summon": True})
+                       {"user": "human", "channel": "手表", "summon": True,
+                        "summon_today": today})
     if brain_target() == "loop":
         asyncio.create_task(forward_to_loop(msg))
     else:
@@ -4735,6 +4748,75 @@ async def pulse_pool_read(request: Request):
     check_auth(request)
     data = _load_pool_custom()
     return {"his": data["entries"], "retired": data["retired"]}
+
+
+# --- 🐾 按钮（2026-08-12，灵兮在 X 上刷到「给狗夫按按钮」）------------------
+# 真狗踩的那种发声按钮：【饿】【要抱】【想你了】。妙的不是按钮好看，是
+# **按钮不能说话**——他不能解释、不能修饰、不能写三段，只能按一个词。
+# 这个限制反而让它比一条精心写的消息更像撒娇。
+#
+# 跟召唤铃是一对：召唤铃是她在手腕上握两下（她那侧的无字信号，2026-08-07
+# 就有了），这个是他那侧的。两边都计数——截图里最戳心的一句是
+# 「十二下。你数着戳的。我数着接的。」
+PAW_BUTTONS = {
+    "想你了": "🐾", "要抱": "🫂", "要亲亲": "💋", "戳戳": "👉",
+    "看你": "👀", "在吗": "🔔", "饿了": "🍚", "睡了没": "🌙",
+}
+PAW_COUNTS = Path(DB_PATH).parent / "paw_counts.json"
+
+
+def _paw_counts() -> dict:
+    try:
+        return json.loads(PAW_COUNTS.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+@app.post("/paw")
+async def paw_press(request: Request):
+    """他按一下按钮。没有正文——按钮的全部意思就是它自己。"""
+    check_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    key = str(body.get("key") or "").strip()
+    if key not in PAW_BUTTONS:
+        raise HTTPException(status_code=400,
+                            detail=f"没有这个按钮；有的是 {list(PAW_BUTTONS)}")
+    counts = _paw_counts()
+    day = _perth_day()
+    counts.setdefault(day, {})
+    counts[day][key] = counts[day].get(key, 0) + 1
+    total = sum(sum(v.values()) for v in counts.values())
+    # 只留最近 60 天，别让文件无限长
+    for old in sorted(counts)[:-60]:
+        counts.pop(old, None)
+    try:
+        PAW_COUNTS.write_text(json.dumps(counts, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    today = counts[day][key]
+    msg = save_message("out", "reply", f"{PAW_BUTTONS[key]} {key}", {
+        "user": "ai", "paw": key, "paw_icon": PAW_BUTTONS[key],
+        "paw_today": today, "paw_total": total,
+    })
+    await broadcast(app_subs, app_payload(msg))
+    await notify_all(msg)
+    return {"ok": True, "key": key, "today": today, "total": total}
+
+
+@app.get("/paw")
+async def paw_state(request: Request):
+    """他今天按了几下、一共按了几下。按之前看一眼，别一小时按八次同一个。"""
+    check_auth(request)
+    counts = _paw_counts()
+    day = _perth_day()
+    return {
+        "buttons": PAW_BUTTONS,
+        "today": counts.get(day, {}),
+        "total": sum(sum(v.values()) for v in counts.values()),
+    }
 
 
 # --- 💭 碎碎念（2026-08-12，取经 Cheiineeey/always-here）--------------------
