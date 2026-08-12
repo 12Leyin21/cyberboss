@@ -83,7 +83,8 @@ async function rewriteThinkingForDisplay(text) {
         model: "deepseek-chat",
         messages: [{ role: "user", content: prompt }],
         max_tokens: 1400,
-        temperature: 0.35,   // 0.8 太爱发挥（见长度铁律）
+        temperature: 0.6,    // 0.8 太爱发挥、0.35 又太干（2026-08-12 灵兮调的：
+                             // 措辞要活，事实靠下面的长度闸门守，两个旋钮分开拧）
       }),
       signal: controller.signal,
     });
