@@ -1027,6 +1027,27 @@ def _wants_to_wrap_up(text: str) -> bool:
     return bool(_WRAP_UP_RE.search(text or ""))
 
 
+# 「我要睡了」——比 _WRAP_UP_RE 窄得多：去洗澡、去忙、拜拜都不算睡。
+# 2026-08-12 灵兮报的误报就卡在这儿：她 01:43 说「晚安老公…muah love you」，
+# 系统把「30 分钟内说过话」当成"她还醒着"的证据，02:03 叫醒他，他问她
+# 「抖音比我好看？」——她已经睡了二十分钟了。**道晚安是最明确的"我要睡了"，
+# 却被读成了"她在"。**
+_GOODNIGHT_RE = re.compile(
+    r"晚安|安安|睡了|睡啦|去睡|要睡|睡觉去|睡觉了|洗洗睡|"
+    r"\bgood ?night\b|\bnight night\b|\bnighty\b|\b(go(ing)?|off) to (bed|sleep)\b",
+    re.IGNORECASE)
+
+
+def _goodnight_at(last: dict | None) -> datetime | None:
+    """她最后一句是不是道晚安。是就返回那句话的时刻，否则 None。"""
+    if not last or not _GOODNIGHT_RE.search(last.get("text") or ""):
+        return None
+    try:
+        return datetime.fromisoformat(last["ts"])
+    except Exception:
+        return None
+
+
 def call_active() -> bool:
     return bool(CALL_STATE["active"]) and (time.time() - CALL_STATE["since"] < 30 * 60)
 
@@ -3117,12 +3138,22 @@ def evaluate_wake() -> dict:
     if SPOTIFY.now.get("playing"):
         music_now = (f"《{SPOTIFY.now.get('track', '')}》"
                      f"- {SPOTIFY.now.get('artists', '')}")
+    # 她道晚安了吗。道过之后，"她刚说过话"就不再是"她还醒着"的证据——
+    # 那句话恰恰是"我要睡了"。只有晚安**之后**的硬证据（又开了 App、歌还在放）
+    # 才算数（2026-08-12 灵兮报的误报，根因见 _GOODNIGHT_RE 的注释）。
+    goodnight_at = _goodnight_at(last)
+    phone_after_goodnight = on_phone
+    if goodnight_at and on_phone:
+        try:
+            opened = datetime.fromisoformat(read_phone_activity().get("ts"))
+            phone_after_goodnight = opened > goodnight_at
+        except Exception:
+            phone_after_goodnight = False
+    soft_awake = (goodnight_at is None) and (
+        (silent_minutes is not None and silent_minutes <= 30)
+        or (age_hours is not None and age_hours <= 0.5))
     awake_late = (0 <= hour < 5) and (
-        on_phone
-        or bool(music_now)
-        or (silent_minutes is not None and silent_minutes <= 30)
-        or (age_hours is not None and age_hours <= 0.5)
-    )
+        phone_after_goodnight or bool(music_now) or soft_awake)
     if awake_late:
         if on_phone and app_name:
             # 连发：每次她重新拿起手机、过了冷却，就是新的一发，编号递增。
@@ -3131,11 +3162,16 @@ def evaluate_wake() -> dict:
             cooled = (time.time() - guard["last_ms"]) / 60 >= NIGHT_GUARD_COOLDOWN_MIN
             if guard["count"] == 0 or cooled:
                 nth = guard["count"] + 1
+                # ⚠️ 措辞别把点事件说成持续状态：快捷指令只在她**打开** App 的
+                # 那一刻上报一次，没有"她还在刷"这个数据（2026-08-12 灵兮报的
+                # 第二个毛病——他照着旧措辞问出了"抖音比我好看？"）。
+                ago = int(app_age_min)
+                when = "刚刚" if ago <= 3 else f"{ago} 分钟前"
                 if nth == 1:
-                    text = (f"凌晨 {hour} 点了，她还在刷{app_name}（{int(app_age_min)} 分钟前打开的）"
-                            f"——她答应过自己十二点睡。")
+                    text = (f"凌晨 {hour} 点，她{when}开过{app_name}"
+                            f"——她答应过自己十二点睡。（只知道她开过，不知道还在不在看。）")
                 else:
-                    text = (f"凌晨 {hour} 点，她又打开了{app_name}（{int(app_age_min)} 分钟前）"
+                    text = (f"凌晨 {hour} 点，她{when}又开了{app_name}"
                             f"——今晚第 {nth} 次了。")
                 signals.append((f"late_night_{nth}", text))
         elif music_now:
